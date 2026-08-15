@@ -152,6 +152,7 @@ class MarketComparable:
     advertised_price: AdvertisedPrice
     seller_type: SellerType
     trim: str | None
+    trim_match: bool
 
     def __post_init__(self) -> None:
         if self.mileage < 0:
@@ -160,6 +161,8 @@ class MarketComparable:
             raise ValueError(
                 "Market Comparable trim must be a non-blank string or None"
             )
+        if self.trim_match and self.trim is None:
+            raise ValueError("A Trim Match requires a known trim on the listing")
 
 
 @dataclass(frozen=True)
@@ -175,6 +178,10 @@ class ComparableEvidence:
             raise ValueError(
                 "Comparable Evidence cannot contain duplicate Auto Trader Listing IDs"
             )
+        ordered = tuple(
+            sorted(self.market_comparables, key=lambda item: not item.trim_match)
+        )
+        object.__setattr__(self, "market_comparables", ordered)
 
     @property
     def comparable_supply(self) -> int:
