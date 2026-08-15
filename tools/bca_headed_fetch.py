@@ -63,12 +63,25 @@ def parse_saved_pages(output_dir: Path) -> int:
     return total_lots
 
 
+def _countdown_pacing(seconds: float) -> None:
+    """Show a real-time countdown in the terminal during cadence delay."""
+    remaining = int(seconds)
+    print(f"Pacing cadence: {remaining}s remaining before next page...", end="", flush=True)
+    while remaining > 0:
+        time.sleep(1)
+        remaining -= 1
+        if remaining % 10 == 0 or remaining <= 5:
+            print(f" {remaining}s...", end="", flush=True)
+    print(" Ready!")
+
+
 def run_headed_fetch(options: FetchOptions) -> int:
     """Execute the headed Playwright browser capture session."""
     if options.dry_run:
         return parse_saved_pages(options.output_dir)
 
     try:
+        from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
     except ImportError:
         print(
@@ -82,10 +95,10 @@ def run_headed_fetch(options: FetchOptions) -> int:
     total_acquired = 0
 
     print("=" * 70)
-    print("BCA Headed Browser Capture")
-    print(f"Output directory: {options.output_dir}")
-    print(f"Max pages: {options.max_pages}")
-    print(f"Interval between pages: {options.interval_seconds}s (max 1 page/min)")
+    print("BCA Headed Browser Capture Tool")
+    print(f"Output directory : {options.output_dir}")
+    print(f"Max pages        : {options.max_pages}")
+    print(f"Interval         : {options.interval_seconds}s (cadence: max 1 page/min)")
     print("=" * 70)
 
     with sync_playwright() as playwright:
@@ -93,14 +106,13 @@ def run_headed_fetch(options: FetchOptions) -> int:
         context = browser.new_context()
         page = context.new_page()
 
-        print("\nOpening browser. Please navigate to BCA and log in if needed.")
-        print(
-            "Once on your search results page, press ENTER in this terminal to start capture..."
-        )
+        print("\n[Step 1] Opening browser window to https://www.bca.co.uk ...")
+        print("Please log in to your BCA account and navigate to your search results page.")
+        print("When the search results are displayed on screen, return here and press ENTER.\n")
         page.goto("https://www.bca.co.uk")
 
         try:
-            input("\n[Press ENTER when ready on BCA search results page] > ")
+            input("[Press ENTER when ready on BCA search results page] > ")
         except (EOFError, KeyboardInterrupt):
             print("\nAborting capture session.")
             browser.close()
@@ -108,72 +120,76 @@ def run_headed_fetch(options: FetchOptions) -> int:
 
         current_page = 1
         while current_page <= options.max_pages:
-            print(f"\n--- Capturing Page {current_page} of {options.max_pages} ---")
+            print(f"\n==================== Capturing Page {current_page} of {options.max_pages} ====================")
+            
+            # Scroll to trigger any lazy-loaded cards
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+            page.wait_for_timeout(500)
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(1000)
+
             html_content = page.content()
 
             if check_for_challenge_text(html_content):
                 print("WARNING: Bot verification or CAPTCHA challenge detected!")
-                print(
-                    "Hard stop policy activated: halting automated capture without bypass."
-                )
+                print("Hard stop policy activated: halting automated capture without bypass.")
                 break
 
             output_file = (
                 options.output_dir / f"bca_search_page_{current_page}.html"
             )
             output_file.write_text(html_content, encoding="utf-8")
-            print(f"Saved DOM to: {output_file}")
+            print(f"Saved DOM ({len(html_content):,} bytes) to: {output_file}")
 
             if options.parse_on_save:
                 lots = importer.import_from_html(html_content)
                 print(
-                    f"Parsed {len(lots)} condition-eligible lots from page {current_page}."
+                    f"Parsed {len(lots)} condition-eligible lots with CAP Clean Prices from page {current_page}."
                 )
                 total_acquired += len(lots)
 
             if current_page >= options.max_pages:
                 print(
-                    f"Reached maximum page limit ({options.max_pages}). Capture complete."
+                    f"\nReached maximum page limit ({options.max_pages}). Capture session complete."
                 )
                 break
 
-            print(
-                f"Pacing: waiting {options.interval_seconds:.0f}s before moving to next page (1 page/min limit)..."
-            )
-            time.sleep(options.interval_seconds)
+            # Pacing countdown
+            print()
+            _countdown_pacing(options.interval_seconds)
 
-            # Scroll to bottom to ensure pagination bar is visible in DOM
+            # Scroll down to make sure bottom pagination controls are visible
+            print(f"Looking for next page button (Page {current_page + 1})...")
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(1000)
 
-            # Try locating BCA next page button with multiple selector strategies
             next_selectors = [
                 "button[aria-label='Go to next page']",
                 f"button[aria-label='Go to page {current_page + 1}']",
                 "button:has-text('next')",
                 "a:has-text('next')",
                 "a[rel='next']",
-                ".pagination-next",
             ]
 
             clicked = False
             for selector in next_selectors:
-                with contextlib.suppress(TimeoutError, RuntimeError, ValueError):
+                with contextlib.suppress(PlaywrightError, TimeoutError, RuntimeError, ValueError):
                     btn = page.locator(selector)
                     if btn.count() > 0 and btn.first.is_visible():
                         print(f"Clicking next page using '{selector}'...")
-                        btn.first.click()
-                        page.wait_for_load_state("networkidle")
+                        btn.first.click(timeout=5000)
+                        # Wait for DOM transition without blocking on networkidle
+                        page.wait_for_timeout(3000)
                         clicked = True
                         break
 
             if not clicked:
                 print(
-                    f"\nCould not automatically locate the next page button for page {current_page + 1}."
+                    f"\nCould not automatically click the next button for page {current_page + 1}."
                 )
                 try:
                     user_input = input(
-                        f"Please navigate to page {current_page + 1} in the browser and press ENTER to continue (or 'q' to finish): "
+                        f"Please click 'next' in the browser to view page {current_page + 1}, then press ENTER here (or type 'q' to stop): "
                     )
                     if user_input.strip().lower() == "q":
                         print("User chose to end capture.")
@@ -185,7 +201,9 @@ def run_headed_fetch(options: FetchOptions) -> int:
 
         browser.close()
 
-    print(f"\nCapture session completed. Total lots acquired: {total_acquired}")
+    print("\n======================================================================")
+    print(f"Capture session completed successfully! Total lots acquired: {total_acquired}")
+    print("======================================================================")
     return total_acquired
 
 
