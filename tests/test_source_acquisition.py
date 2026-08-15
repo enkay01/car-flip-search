@@ -1,15 +1,21 @@
+import json
+
 import pytest
 
 from car_flip_search import (
     AuctionLot,
     AuctionLotId,
+    AutoTraderAcquisition,
     AutoTraderListing,
     AutoTraderListingId,
+    AutoTraderRawRecord,
     BcaAcquisition,
     BcaRawRecord,
     CapCleanPrice,
     CashPrice,
     CoreVehicleIdentity,
+    ManualAutoTraderImporter,
+    ManualBcaImporter,
     MarketSnapshot,
     OpportunitySearch,
     SellerType,
@@ -43,6 +49,25 @@ def make_record() -> BcaRawRecord:
         "clean_condition": True,
         "write_off_reported": False,
         "accident_damage_reported": False,
+        "trim": "M Sport",
+    }
+
+
+def make_autotrader_record() -> AutoTraderRawRecord:
+    return {
+        "id": "202603271072975",
+        "identity": {
+            "make": "BMW",
+            "model_variant": "320d",
+            "registration_year": 2016,
+            "fuel_type": "Diesel",
+            "transmission": "Automatic",
+            "body_style": "Saloon",
+            "door_count": 4,
+        },
+        "mileage": 117_004,
+        "cash_price": 8_995,
+        "seller_type": "dealer",
         "trim": "M Sport",
     }
 
@@ -104,6 +129,47 @@ def incomplete_records() -> tuple[BcaRawRecord, ...]:
     )
 
 
+def incomplete_autotrader_records() -> tuple[AutoTraderRawRecord, ...]:
+    missing_id = make_autotrader_record()
+    missing_id.pop("id")
+
+    missing_identity = make_autotrader_record()
+    missing_identity.pop("identity")
+
+    incomplete_identity = make_autotrader_record()
+    incomplete_identity["identity"].pop("door_count")
+
+    missing_mileage = make_autotrader_record()
+    missing_mileage.pop("mileage")
+
+    negative_mileage = make_autotrader_record()
+    negative_mileage["mileage"] = -1
+
+    missing_cash_price = make_autotrader_record()
+    missing_cash_price.pop("cash_price")
+
+    negative_cash_price = make_autotrader_record()
+    negative_cash_price["cash_price"] = -1
+
+    missing_seller_type = make_autotrader_record()
+    missing_seller_type.pop("seller_type")
+
+    invalid_seller_type = make_autotrader_record()
+    invalid_seller_type["seller_type"] = "auctioneer"
+
+    return (
+        missing_id,
+        missing_identity,
+        incomplete_identity,
+        missing_mileage,
+        negative_mileage,
+        missing_cash_price,
+        negative_cash_price,
+        missing_seller_type,
+        invalid_seller_type,
+    )
+
+
 def test_bca_acquisition_emits_a_strict_auction_lot() -> None:
     acquired_lots = BcaAcquisition().acquire([make_record()])
 
@@ -160,3 +226,71 @@ def test_acquired_bca_lot_passes_to_opportunity_search_without_lifecycle_inputs(
     assert opportunities.candidates[0].auction_lot == auction_lot
     assert opportunities.candidates[0].comparable_supply == 1
     assert opportunities.candidates[0].price_spread.pounds == 3_545
+
+
+def test_autotrader_acquisition_emits_strict_listing_and_snapshot() -> None:
+    acquisition = AutoTraderAcquisition()
+    listings = acquisition.acquire([make_autotrader_record()])
+
+    assert listings == (
+        AutoTraderListing(
+            id=AutoTraderListingId("202603271072975"),
+            identity=DEFAULT_IDENTITY,
+            mileage=117_004,
+            cash_price=CashPrice(8_995),
+            seller_type=SellerType.DEALER,
+            trim="M Sport",
+        ),
+    )
+
+    snapshot = acquisition.acquire_snapshot([make_autotrader_record()])
+    assert snapshot.listings == listings
+
+
+@pytest.mark.parametrize("invalid_record", incomplete_autotrader_records())
+def test_autotrader_acquisition_silently_discards_incomplete_records(
+    invalid_record: AutoTraderRawRecord,
+) -> None:
+    assert AutoTraderAcquisition().acquire([invalid_record]) == ()
+
+
+def test_autotrader_acquisition_allows_omitted_trim() -> None:
+    record = make_autotrader_record()
+    record.pop("trim")
+
+    listings = AutoTraderAcquisition().acquire([record])
+    assert listings[0].trim is None
+
+
+def test_manual_bca_importer_parses_json_and_records() -> None:
+    importer = ManualBcaImporter()
+    record = make_record()
+
+    imported_from_records = importer.import_from_records([record])
+    assert len(imported_from_records) == 1
+    assert imported_from_records[0].id == AuctionLotId("YF66 FEJ")
+
+    json_payload = json.dumps([record])
+    imported_from_json = importer.import_from_json(json_payload)
+    assert len(imported_from_json) == 1
+    assert imported_from_json[0].id == AuctionLotId("YF66 FEJ")
+
+    assert importer.import_from_json("invalid json") == ()
+    assert importer.import_from_json('{"not": "a list"}') == ()
+
+
+def test_manual_autotrader_importer_parses_json_and_records() -> None:
+    importer = ManualAutoTraderImporter()
+    record = make_autotrader_record()
+
+    snapshot_from_records = importer.import_from_records([record])
+    assert len(snapshot_from_records.listings) == 1
+    assert snapshot_from_records.listings[0].id == AutoTraderListingId("202603271072975")
+
+    json_payload = json.dumps([record])
+    snapshot_from_json = importer.import_from_json(json_payload)
+    assert len(snapshot_from_json.listings) == 1
+    assert snapshot_from_json.listings[0].id == AutoTraderListingId("202603271072975")
+
+    assert importer.import_from_json("invalid json").listings == ()
+    assert importer.import_from_json('{"not": "a list"}').listings == ()
