@@ -75,32 +75,6 @@ def test_comparison_eligible_candidate_has_comparable_supply_and_price_spread() 
     )
 
 
-def test_candidate_vehicle_with_non_gbp_cash_price_has_no_comparable_evidence() -> None:
-    identity = CoreVehicleIdentity(
-        "Ford", "Focus", 2021, "Petrol", "Manual", "Hatchback", 5
-    )
-    auction_lot = AuctionLot(
-        AuctionLotId("bca-123"),
-        identity,
-        41_000,
-        CapCleanPrice(Money(Decimal("10000.00"), "GBP")),
-    )
-    listing = AutoTraderListing(
-        AutoTraderListingId("at-456"),
-        identity,
-        40_000,
-        CashPrice(Money(Decimal("12500.00"), "EUR")),
-        SellerType.PRIVATE,
-    )
-
-    opportunities = OpportunitySearch().search([auction_lot], MarketSnapshot([listing]))
-
-    candidate = opportunities.candidates[0]
-    assert candidate.comparable_evidence == NoComparableEvidence()
-    assert candidate.comparable_supply == 0
-    assert candidate.price_spread == NoComparableEvidence()
-
-
 def test_listing_with_different_core_vehicle_identity_is_not_a_market_comparable() -> (
     None
 ):

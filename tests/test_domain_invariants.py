@@ -113,3 +113,18 @@ def test_source_prices_reject_negative_money() -> None:
         CashPrice(Money(Decimal("-1.00"), "GBP"))
     with pytest.raises(ValueError):
         CapCleanPrice(Money(Decimal("-1.00"), "GBP"))
+
+
+def test_auto_trader_listing_requires_a_gbp_cash_price() -> None:
+    identity = CoreVehicleIdentity(
+        "Ford", "Focus", 2021, "Petrol", "Manual", "Hatchback", 5
+    )
+
+    with pytest.raises(ValueError, match="GBP"):
+        AutoTraderListing(
+            AutoTraderListingId("at-456"),
+            identity,
+            40_000,
+            CashPrice(Money(Decimal("12500.00"), "EUR")),
+            SellerType.PRIVATE,
+        )

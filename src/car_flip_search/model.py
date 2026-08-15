@@ -70,6 +70,10 @@ class CapCleanPrice:
         if self.money.amount < 0:
             raise ValueError("CAP Clean Price cannot be negative")
 
+    @property
+    def amount(self) -> Decimal:
+        return self.money.amount
+
 
 @dataclass(frozen=True)
 class AdvertisedPrice:
@@ -80,6 +84,10 @@ class AdvertisedPrice:
             raise TypeError("Advertised Price must be derived from a Cash Price")
         if self.cash_price.money.currency != "GBP":
             raise ValueError("Advertised Price must be derived from a GBP Cash Price")
+
+    @property
+    def amount(self) -> Decimal:
+        return self.cash_price.money.amount
 
 
 @dataclass(frozen=True)
@@ -100,7 +108,7 @@ class PriceSpread:
     ) -> "PriceSpread":
         return cls(
             Money(
-                advertised_price.cash_price.money.amount - cap_clean_price.money.amount,
+                advertised_price.amount - cap_clean_price.amount,
                 "GBP",
             )
         )
@@ -187,6 +195,8 @@ class AutoTraderListing:
             )
         if not _is_exact_type(self.cash_price, CashPrice):
             raise TypeError("Auto Trader Listing must have a Cash Price")
+        if self.cash_price.money.currency != "GBP":
+            raise ValueError("Auto Trader Listing must have a GBP Cash Price")
         if not _is_exact_type(self.seller_type, SellerType):
             raise TypeError("Auto Trader Listing must have a Seller Type")
         if self.trim is not None and (
@@ -272,7 +282,7 @@ class ComparableEvidence:
     def advertised_price(self) -> AdvertisedPrice:
         return min(
             self.market_comparables,
-            key=lambda item: item.advertised_price.cash_price.money.amount,
+            key=lambda item: item.advertised_price.amount,
         ).advertised_price
 
 

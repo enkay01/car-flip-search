@@ -54,7 +54,6 @@ def _is_market_comparable(
     listing: AutoTraderListing,
 ) -> bool:
     return (
-        listing.cash_price.money.currency == "GBP"
-        and listing.identity == auction_lot.identity
+        listing.identity == auction_lot.identity
         and abs(listing.mileage - auction_lot.mileage) <= MILEAGE_BAND_MILES
     )
