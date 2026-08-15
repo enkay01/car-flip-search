@@ -8,7 +8,7 @@ from car_flip_search import (
     AuctionLotId,
     AutoTraderListing,
     AutoTraderListingId,
-    Candidate,
+    CandidateVehicle,
     CapCleanPrice,
     CashPrice,
     ComparableEvidence,
@@ -52,7 +52,7 @@ def test_comparison_eligible_candidate_has_comparable_supply_and_price_spread() 
 
     assert opportunities == OpportunityList(
         (
-            Candidate(
+            CandidateVehicle(
                 auction_lot,
                 ComparableEvidence(
                     (
@@ -99,6 +99,64 @@ def test_candidate_vehicle_with_non_gbp_cash_price_has_no_comparable_evidence() 
     assert candidate.comparable_evidence == NoComparableEvidence()
     assert candidate.comparable_supply == 0
     assert candidate.price_spread == NoComparableEvidence()
+
+
+def test_listing_with_different_core_vehicle_identity_is_not_a_market_comparable() -> (
+    None
+):
+    auction_identity = CoreVehicleIdentity(
+        "Ford", "Focus", 2021, "Petrol", "Manual", "Hatchback", 5
+    )
+    listing_identity = CoreVehicleIdentity(
+        "Toyota", "Yaris", 2021, "Hybrid", "Automatic", "Hatchback", 5
+    )
+    auction_lot = AuctionLot(
+        AuctionLotId("bca-123"),
+        auction_identity,
+        40_000,
+        CapCleanPrice(Money(Decimal("10000.00"), "GBP")),
+    )
+    listing = AutoTraderListing(
+        AutoTraderListingId("at-456"),
+        listing_identity,
+        40_000,
+        CashPrice(Money(Decimal("12500.00"), "GBP")),
+        SellerType.DEALER,
+    )
+
+    opportunities = OpportunitySearch().search([auction_lot], MarketSnapshot([listing]))
+
+    assert opportunities.candidates[0].comparable_evidence == NoComparableEvidence()
+
+
+@pytest.mark.parametrize(
+    ("listing_mileage", "expected_comparable_supply"),
+    [(55_000, 1), (55_001, 0)],
+)
+def test_market_comparable_respects_the_mileage_band_boundary(
+    listing_mileage: int,
+    expected_comparable_supply: int,
+) -> None:
+    identity = CoreVehicleIdentity(
+        "Ford", "Focus", 2021, "Petrol", "Manual", "Hatchback", 5
+    )
+    auction_lot = AuctionLot(
+        AuctionLotId("bca-123"),
+        identity,
+        40_000,
+        CapCleanPrice(Money(Decimal("10000.00"), "GBP")),
+    )
+    listing = AutoTraderListing(
+        AutoTraderListingId("at-456"),
+        identity,
+        listing_mileage,
+        CashPrice(Money(Decimal("12500.00"), "GBP")),
+        SellerType.DEALER,
+    )
+
+    opportunities = OpportunitySearch().search([auction_lot], MarketSnapshot([listing]))
+
+    assert opportunities.candidates[0].comparable_supply == expected_comparable_supply
 
 
 def test_opportunity_search_rejects_zero_auction_lots_and_listings() -> None:

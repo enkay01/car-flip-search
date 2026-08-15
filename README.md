@@ -21,4 +21,5 @@ candidates and their valuation signals.
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
+uv run python tools/anti_slop/cli.py check .
 ```

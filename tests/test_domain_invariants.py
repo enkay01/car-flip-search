@@ -8,7 +8,7 @@ from car_flip_search import (
     AuctionLotId,
     AutoTraderListing,
     AutoTraderListingId,
-    Candidate,
+    CandidateVehicle,
     CapCleanPrice,
     CashPrice,
     ComparableEvidence,
@@ -105,7 +105,7 @@ def test_opportunity_list_rejects_duplicate_auction_lot_ids() -> None:
     )
 
     with pytest.raises(ValueError, match="duplicate"):
-        OpportunityList([Candidate(lot, NoComparableEvidence())] * 2)
+        OpportunityList([CandidateVehicle(lot, NoComparableEvidence())] * 2)
 
 
 def test_source_prices_reject_negative_money() -> None:

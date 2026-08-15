@@ -5,13 +5,16 @@ from collections.abc import Iterable
 from .model import (
     AdvertisedPrice,
     AuctionLot,
-    Candidate,
+    AutoTraderListing,
+    CandidateVehicle,
     ComparableEvidence,
     MarketComparable,
     MarketSnapshot,
     NoComparableEvidence,
     OpportunityList,
 )
+
+MILEAGE_BAND_MILES = 15_000
 
 
 class OpportunitySearch:
@@ -28,7 +31,7 @@ class OpportunitySearch:
             )
         auction_lot = immutable_auction_lots[0]
         listing = market_snapshot.listings[0]
-        if listing.cash_price.money.currency != "GBP":
+        if not _is_market_comparable(auction_lot, listing):
             evidence: ComparableEvidence | NoComparableEvidence = NoComparableEvidence()
         else:
             evidence = ComparableEvidence(
@@ -43,4 +46,15 @@ class OpportunitySearch:
                     ),
                 )
             )
-        return OpportunityList((Candidate(auction_lot, evidence),))
+        return OpportunityList((CandidateVehicle(auction_lot, evidence),))
+
+
+def _is_market_comparable(
+    auction_lot: AuctionLot,
+    listing: AutoTraderListing,
+) -> bool:
+    return (
+        listing.cash_price.money.currency == "GBP"
+        and listing.identity == auction_lot.identity
+        and abs(listing.mileage - auction_lot.mileage) <= MILEAGE_BAND_MILES
+    )

@@ -2,7 +2,9 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
-This repository currently has no Git remote configured. Add its GitHub remote before using these tracker commands; afterward, `gh` will infer the repository automatically.
+Before using tracker commands, inspect `git remote -v`. If no GitHub remote is
+configured, add one; otherwise let `gh` infer the repository from the existing
+remote.
 
 ## Conventions
 

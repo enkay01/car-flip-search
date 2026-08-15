@@ -282,18 +282,20 @@ class NoComparableEvidence:
 
 
 @dataclass(frozen=True)
-class Candidate:
+class CandidateVehicle:
     auction_lot: AuctionLot
     comparable_evidence: ComparableEvidence | NoComparableEvidence
 
     def __post_init__(self) -> None:
         if not _is_exact_type(self.auction_lot, AuctionLot):
-            raise TypeError("Candidate must contain an Auction Lot")
+            raise TypeError("Candidate Vehicle must contain an Auction Lot")
         if not (
             _is_exact_type(self.comparable_evidence, ComparableEvidence)
             or _is_exact_type(self.comparable_evidence, NoComparableEvidence)
         ):
-            raise TypeError("Candidate must contain explicit comparable evidence")
+            raise TypeError(
+                "Candidate Vehicle must contain explicit comparable evidence"
+            )
 
     @property
     def comparable_supply(self) -> int:
@@ -313,15 +315,15 @@ class Candidate:
 
 @dataclass(frozen=True)
 class OpportunityList:
-    candidates: tuple[Candidate, ...]
+    candidates: tuple[CandidateVehicle, ...]
 
-    def __init__(self, candidates: Sequence[Candidate]) -> None:
+    def __init__(self, candidates: Sequence[CandidateVehicle]) -> None:
         immutable_candidates = tuple(candidates)
         if any(
-            not _is_exact_type(candidate, Candidate)
+            not _is_exact_type(candidate, CandidateVehicle)
             for candidate in immutable_candidates
         ):
-            raise TypeError("Opportunity List contains Candidates")
+            raise TypeError("Opportunity List contains Candidate Vehicles")
         if len({candidate.auction_lot.id for candidate in immutable_candidates}) != len(
             immutable_candidates
         ):
