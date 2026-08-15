@@ -1,7 +1,20 @@
 [project]
 name = "car-flip-search"
 version = "0.1.0"
-description = "Add your description here"
+description = "Find BCA auction candidates using live Auto Trader market evidence"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+target-version = "py313"

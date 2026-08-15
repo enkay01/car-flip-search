@@ -13,7 +13,7 @@ The CAP valuation for a vehicle in clean condition, shown on its BCA Auction Lot
 _Avoid_: CAP price, clean CAP
 
 **Price Spread**:
-The positive difference calculated as the lowest Advertised Price among a Candidate Vehicle's Market Comparables minus its CAP Clean Price. It is a valuation signal, not a profit estimate.
+The signed difference calculated as the lowest Advertised Price among a Candidate Vehicle's Market Comparables minus its CAP Clean Price. It is a valuation signal, not a profit estimate.
 _Avoid_: Profit, margin
 
 ## Retail-market comparison
@@ -42,16 +42,12 @@ _Avoid_: Broad model family, trim
 The model-level engine or badge variant that differentiates vehicles in the same model family, such as A180d and A200d.
 _Avoid_: Model family, trim
 
-**Generation Match**:
-A match between the vehicle generations or facelifts of a Candidate Vehicle and a market listing. When both records identify a generation, a mismatch excludes the listing; when either record does not, the comparison proceeds without that check.
-_Avoid_: Same registration year, approximate generation
-
 **Trim Match**:
 An optional match of derivative or trim between a Candidate Vehicle and a market listing. It strengthens the comparison but is not required.
 _Avoid_: Required identity, eligibility gate
 
 **Market Comparable**:
-An Auto Trader Listing that matches a Candidate Vehicle's Core Vehicle Identity and Mileage Band, with a Generation Match where both records identify a generation. A Trim Match is preferred but not required.
+An Auto Trader Listing that matches a Candidate Vehicle's Core Vehicle Identity and Mileage Band. A Trim Match is preferred but not required.
 _Avoid_: Same car, equivalent car
 
 **Mileage Band**:
@@ -67,7 +63,7 @@ The geographic coverage of the BCA and Auto Trader comparison market: the United
 _Avoid_: Local market, search radius
 
 **High-Mileage Reference**:
-An Auto Trader Listing that matches a Candidate Vehicle's Core Vehicle Identity, with a Generation Match where both records identify a generation, but has mileage above its Mileage Band. It is not a Market Comparable.
+An Auto Trader Listing that matches a Candidate Vehicle's Core Vehicle Identity but has mileage above its Mileage Band. It is not a Market Comparable.
 _Avoid_: Comparable, match
 
 **Retail Floor**:
