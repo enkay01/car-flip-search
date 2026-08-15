@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
-from typing import TypeGuard
 
 
 @dataclass(frozen=True)
@@ -12,7 +11,7 @@ class AuctionLotId:
     value: str
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.value, str) or not self.value.strip():
+        if not self.value.strip():
             raise ValueError("Auction Lot ID must be a non-blank string")
 
 
@@ -21,7 +20,7 @@ class AutoTraderListingId:
     value: str
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.value, str) or not self.value.strip():
+        if not self.value.strip():
             raise ValueError("Auto Trader Listing ID must be a non-blank string")
 
 
@@ -31,13 +30,10 @@ class Money:
     currency: str
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.amount, Decimal):
-            raise TypeError("Money amount must be a Decimal")
         if not self.amount.is_finite():
             raise ValueError("Money amount must be finite")
         if (
-            not _is_exact_type(self.currency, str)
-            or len(self.currency) != 3
+            len(self.currency) != 3
             or not self.currency.isupper()
             or not self.currency.isalpha()
         ):
@@ -52,8 +48,6 @@ class CashPrice:
     money: Money
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.money, Money):
-            raise TypeError("Cash Price must contain Money")
         if self.money.amount < 0:
             raise ValueError("Cash Price cannot be negative")
 
@@ -63,8 +57,6 @@ class CapCleanPrice:
     money: Money
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.money, Money):
-            raise TypeError("CAP Clean Price must contain Money")
         if self.money.currency != "GBP":
             raise ValueError("CAP Clean Price must be GBP")
         if self.money.amount < 0:
@@ -80,8 +72,6 @@ class AdvertisedPrice:
     cash_price: CashPrice
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.cash_price, CashPrice):
-            raise TypeError("Advertised Price must be derived from a Cash Price")
         if self.cash_price.money.currency != "GBP":
             raise ValueError("Advertised Price must be derived from a GBP Cash Price")
 
@@ -95,8 +85,6 @@ class PriceSpread:
     money: Money
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.money, Money):
-            raise TypeError("Price Spread must contain Money")
         if self.money.currency != "GBP":
             raise ValueError("Price Spread must be GBP")
 
@@ -132,18 +120,13 @@ class CoreVehicleIdentity:
             self.transmission,
             self.body_style,
         )
-        if any(
-            not _is_exact_type(value, str) or not value.strip() for value in text_fields
-        ):
+        if any(not value.strip() for value in text_fields):
             raise ValueError(
                 "Core Vehicle Identity text fields must be non-blank strings"
             )
-        if (
-            not _is_exact_type(self.registration_year, int)
-            or not 1886 <= self.registration_year <= 9999
-        ):
+        if not 1886 <= self.registration_year <= 9999:
             raise ValueError("Core Vehicle Identity registration year must be valid")
-        if not _is_exact_type(self.door_count, int) or self.door_count < 1:
+        if self.door_count < 1:
             raise ValueError("Core Vehicle Identity door count must be positive")
 
 
@@ -156,17 +139,9 @@ class AuctionLot:
     trim: str | None = None
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.id, AuctionLotId):
-            raise TypeError("Auction Lot must use an AuctionLotId")
-        if not _is_exact_type(self.identity, CoreVehicleIdentity):
-            raise TypeError("Auction Lot must have a Core Vehicle Identity")
-        if not _is_exact_type(self.mileage, int) or self.mileage < 0:
-            raise ValueError("Auction Lot mileage must be a non-negative integer")
-        if not _is_exact_type(self.cap_clean_price, CapCleanPrice):
-            raise TypeError("Auction Lot must have a CAP Clean Price")
-        if self.trim is not None and (
-            not _is_exact_type(self.trim, str) or not self.trim.strip()
-        ):
+        if self.mileage < 0:
+            raise ValueError("Auction Lot mileage must be non-negative")
+        if self.trim is not None and not self.trim.strip():
             raise ValueError("Auction Lot trim must be a non-blank string or None")
 
 
@@ -185,23 +160,11 @@ class AutoTraderListing:
     trim: str | None = None
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.id, AutoTraderListingId):
-            raise TypeError("Auto Trader Listing must use an AutoTraderListingId")
-        if not _is_exact_type(self.identity, CoreVehicleIdentity):
-            raise TypeError("Auto Trader Listing must have a Core Vehicle Identity")
-        if not _is_exact_type(self.mileage, int) or self.mileage < 0:
-            raise ValueError(
-                "Auto Trader Listing mileage must be a non-negative integer"
-            )
-        if not _is_exact_type(self.cash_price, CashPrice):
-            raise TypeError("Auto Trader Listing must have a Cash Price")
+        if self.mileage < 0:
+            raise ValueError("Auto Trader Listing mileage must be non-negative")
         if self.cash_price.money.currency != "GBP":
             raise ValueError("Auto Trader Listing must have a GBP Cash Price")
-        if not _is_exact_type(self.seller_type, SellerType):
-            raise TypeError("Auto Trader Listing must have a Seller Type")
-        if self.trim is not None and (
-            not _is_exact_type(self.trim, str) or not self.trim.strip()
-        ):
+        if self.trim is not None and not self.trim.strip():
             raise ValueError(
                 "Auto Trader Listing trim must be a non-blank string or None"
             )
@@ -213,11 +176,6 @@ class MarketSnapshot:
 
     def __init__(self, listings: Sequence[AutoTraderListing]) -> None:
         immutable_listings = tuple(listings)
-        if any(
-            not _is_exact_type(listing, AutoTraderListing)
-            for listing in immutable_listings
-        ):
-            raise TypeError("Market Snapshot contains Auto Trader Listings")
         if len({listing.id for listing in immutable_listings}) != len(
             immutable_listings
         ):
@@ -237,19 +195,9 @@ class MarketComparable:
     trim: str | None
 
     def __post_init__(self) -> None:
-        if not _is_exact_type(self.listing_id, AutoTraderListingId):
-            raise TypeError("Market Comparable must have an Auto Trader Listing ID")
-        if not _is_exact_type(self.identity, CoreVehicleIdentity):
-            raise TypeError("Market Comparable must have a Core Vehicle Identity")
-        if not _is_exact_type(self.mileage, int) or self.mileage < 0:
-            raise ValueError("Market Comparable mileage must be a non-negative integer")
-        if not _is_exact_type(self.advertised_price, AdvertisedPrice):
-            raise TypeError("Market Comparable must have an Advertised Price")
-        if not _is_exact_type(self.seller_type, SellerType):
-            raise TypeError("Market Comparable must have a Seller Type")
-        if self.trim is not None and (
-            not _is_exact_type(self.trim, str) or not self.trim.strip()
-        ):
+        if self.mileage < 0:
+            raise ValueError("Market Comparable mileage must be non-negative")
+        if self.trim is not None and not self.trim.strip():
             raise ValueError(
                 "Market Comparable trim must be a non-blank string or None"
             )
@@ -262,11 +210,6 @@ class ComparableEvidence:
     def __post_init__(self) -> None:
         if not self.market_comparables:
             raise ValueError("Comparable Evidence requires a Market Comparable")
-        if any(
-            not _is_exact_type(item, MarketComparable)
-            for item in self.market_comparables
-        ):
-            raise TypeError("Comparable Evidence contains Market Comparables")
         if len({item.listing_id for item in self.market_comparables}) != len(
             self.market_comparables
         ):
@@ -285,10 +228,18 @@ class ComparableEvidence:
             key=lambda item: item.advertised_price.amount,
         ).advertised_price
 
+    def price_spread(self, cap_clean_price: CapCleanPrice) -> PriceSpread:
+        return PriceSpread.between(self.advertised_price, cap_clean_price)
+
 
 @dataclass(frozen=True)
 class NoComparableEvidence:
-    pass
+    @property
+    def comparable_supply(self) -> int:
+        return 0
+
+    def price_spread(self, cap_clean_price: CapCleanPrice) -> "NoComparableEvidence":
+        return self
 
 
 @dataclass(frozen=True)
@@ -296,31 +247,13 @@ class CandidateVehicle:
     auction_lot: AuctionLot
     comparable_evidence: ComparableEvidence | NoComparableEvidence
 
-    def __post_init__(self) -> None:
-        if not _is_exact_type(self.auction_lot, AuctionLot):
-            raise TypeError("Candidate Vehicle must contain an Auction Lot")
-        if not (
-            _is_exact_type(self.comparable_evidence, ComparableEvidence)
-            or _is_exact_type(self.comparable_evidence, NoComparableEvidence)
-        ):
-            raise TypeError(
-                "Candidate Vehicle must contain explicit comparable evidence"
-            )
-
     @property
     def comparable_supply(self) -> int:
-        if _is_exact_type(self.comparable_evidence, NoComparableEvidence):
-            return 0
         return self.comparable_evidence.comparable_supply
 
     @property
     def price_spread(self) -> PriceSpread | NoComparableEvidence:
-        if _is_exact_type(self.comparable_evidence, NoComparableEvidence):
-            return self.comparable_evidence
-        return PriceSpread.between(
-            self.comparable_evidence.advertised_price,
-            self.auction_lot.cap_clean_price,
-        )
+        return self.comparable_evidence.price_spread(self.auction_lot.cap_clean_price)
 
 
 @dataclass(frozen=True)
@@ -329,11 +262,6 @@ class OpportunityList:
 
     def __init__(self, candidates: Sequence[CandidateVehicle]) -> None:
         immutable_candidates = tuple(candidates)
-        if any(
-            not _is_exact_type(candidate, CandidateVehicle)
-            for candidate in immutable_candidates
-        ):
-            raise TypeError("Opportunity List contains Candidate Vehicles")
         if len({candidate.auction_lot.id for candidate in immutable_candidates}) != len(
             immutable_candidates
         ):
@@ -341,10 +269,3 @@ class OpportunityList:
                 "Opportunity List cannot contain duplicate Auction Lot IDs"
             )
         object.__setattr__(self, "candidates", immutable_candidates)
-
-
-def _is_exact_type[Value, ExpectedType](
-    value: Value,
-    expected: type[ExpectedType],
-) -> TypeGuard[ExpectedType]:
-    return type(value) is expected

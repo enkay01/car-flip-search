@@ -22,11 +22,7 @@ from car_flip_search import (
 )
 
 
-def test_money_rejects_float_non_iso_currency_and_more_than_two_fractional_digits() -> (
-    None
-):
-    with pytest.raises(TypeError):
-        Money(10000.0, "GBP")
+def test_money_rejects_non_iso_currency_and_more_than_two_fractional_digits() -> None:
     with pytest.raises(ValueError):
         Money(Decimal("10000.00"), "gbp")
     with pytest.raises(ValueError):
@@ -44,20 +40,6 @@ def test_source_ids_reject_whitespace_only_values() -> None:
         AuctionLotId("  ")
     with pytest.raises(ValueError):
         AutoTraderListingId("\t")
-
-
-def test_auction_lot_rejects_auto_trader_listing_id() -> None:
-    identity = CoreVehicleIdentity(
-        "Ford", "Focus", 2021, "Petrol", "Manual", "Hatchback", 5
-    )
-
-    with pytest.raises(TypeError):
-        AuctionLot(
-            AutoTraderListingId("at-456"),
-            identity,
-            41_000,
-            CapCleanPrice(Money(Decimal("10000.00"), "GBP")),
-        )
 
 
 def test_market_snapshot_rejects_duplicate_auto_trader_listing_ids() -> None:
