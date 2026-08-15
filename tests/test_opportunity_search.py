@@ -286,4 +286,35 @@ def test_candidate_can_have_a_negative_price_spread() -> None:
 
     opportunities = OpportunitySearch().search([lot], MarketSnapshot([listing]))
 
+    assert len(opportunities.candidates) == 1
     assert opportunities.candidates[0].price_spread == PriceSpread(-1_500)
+
+
+def test_candidate_with_equal_advertised_price_and_cap_has_zero_price_spread() -> None:
+    at_cap_listing = replace(BASE_LISTING, cash_price=CashPrice(10_000))
+
+    opportunities = OpportunitySearch().search(
+        [BASE_LOT], MarketSnapshot([at_cap_listing])
+    )
+
+    candidate = opportunities.candidates[0]
+    assert candidate.comparable_supply == 1
+    assert candidate.price_spread == PriceSpread(0)
+
+
+def test_candidate_with_no_direct_market_comparable_remains_in_the_list() -> None:
+    out_of_band_listing = replace(
+        BASE_LISTING,
+        id=AutoTraderListingId("at-far"),
+        mileage=55_001,
+    )
+
+    opportunities = OpportunitySearch().search(
+        [BASE_LOT], MarketSnapshot([out_of_band_listing])
+    )
+
+    assert len(opportunities.candidates) == 1
+    candidate = opportunities.candidates[0]
+    assert candidate.comparable_supply == 0
+    assert candidate.comparable_evidence == NoComparableEvidence()
+    assert candidate.price_spread == NoComparableEvidence()
