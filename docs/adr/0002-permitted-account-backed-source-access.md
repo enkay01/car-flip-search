@@ -12,42 +12,48 @@ systems.
 ## Decision
 
 1. **Permitted Access Mechanisms**:
-   - **BCA**: Supported B2B / Partner API (REST with API key / OAuth token) or
-     authenticated trade catalogue export feeds (JSON/CSV) via trade buyer
-     accounts.
+   - **BCA**: Supported B2B / Partner API, authenticated trade catalogue export
+     feeds (JSON/CSV), or user-assisted headed browser DOM capture / saved HTML
+     pages.
    - **Auto Trader**: Auto Trader Connect Developer API (OAuth2 client
-     credentials / API key) for registered partners.
-   - **Strict No-Evasion Rule**: Unauthorized web scraping, headless browser
-     automation against consumer login walls, CAPTCHA solving, and proxy
-     rotation are explicitly prohibited.
+     credentials / API key) for registered partners, or manual market snapshot
+     feeds.
+   - **Strict No-Evasion Rule**: Unauthorized headless scraping against bot
+     defenses, CAPTCHA solving, and proxy rotation are explicitly prohibited.
 
-2. **Hard Stops and Account Safety**:
+2. **Headed Browser Capture Workflow (BCA API Alternative)**:
+   - When direct APIs are unavailable, data is acquired via user-controlled
+     headed browser sessions (`tools/bca_headed_fetch.py`) or saved HTML pages.
+   - **Strict Pacing**: Maximum 1 page per minute (60-second delay between
+     page navigations).
+   - **Bounded Scope**: Maximum 5 search results pages per run.
+   - **Local Parsing**: The full page DOM is saved locally to disk and parsed
+     offline by `ManualBcaImporter.import_from_html`.
+
+3. **Hard Stops and Account Safety**:
    - Immediate hard stop on authentication challenges (HTTP 401 / 403).
    - Immediate hard stop on anti-bot or CAPTCHA challenge detection.
    - Immediate hard stop on repeated throttling after Retry-After-aware backoff
      exhaustion.
-   - No evasion or retry loops when an access restriction is encountered.
 
-3. **Cadence, Caching, and Deduplication**:
+4. **Cadence, Caching, and Deduplication**:
    - Low concurrency (single-worker bounded cadence).
-   - Conservative request pacing (e.g., 1 request per second for BCA; max 5
-     requests per second for Auto Trader).
+   - Conservative request pacing (e.g., 1 request per second for direct API;
+     1 page per minute for browser capture; max 5 req/s for Auto Trader).
    - In-memory response caching and ID deduplication to prevent redundant
      source queries.
-   - Retry-After-aware exponential backoff with jitter for transient 429
-     responses.
 
-4. **Credential Isolation and Revocation**:
+5. **Credential Isolation and Revocation**:
    - Credentials exist strictly within the source access boundary and are
      masked in string representations to prevent logging or leakage.
    - Domain models (`AuctionLot`, `AutoTraderListing`, `OpportunityList`)
      remain free of transport, authentication, or session fields.
    - Explicit credential revocation and clearance methods are provided.
 
-5. **No-Go Constraint and Manual Import Fallback**:
+6. **No-Go Constraint and Manual Import Fallback**:
    - When approved API credentials are not provisioned or when an automated path
      is challenged, the system records an explicit `NO_GO_MANUAL_REQUIRED`
      decision.
    - Structured manual import paths (`ManualBcaImporter` and
      `ManualAutoTraderImporter`) are provided and preserved as supported first-class
-     acquisition routes.
+     acquisition routes for JSON, CSV, and saved HTML DOM files.

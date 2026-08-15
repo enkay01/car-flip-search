@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -170,6 +171,51 @@ def incomplete_autotrader_records() -> tuple[AutoTraderRawRecord, ...]:
     )
 
 
+def sample_bca_dom_html() -> str:
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head><title>BCA Search Results</title></head>
+    <body>
+        <div class="search-results">
+            <div class="lot-card"
+                 data-lot-id="YF66 FEJ"
+                 data-make="BMW"
+                 data-model-variant="320d"
+                 data-registration-year="2016"
+                 data-fuel-type="Diesel"
+                 data-transmission="Automatic"
+                 data-body-style="Saloon"
+                 data-door-count="4"
+                 data-mileage="130319"
+                 data-cap-clean-price="5450"
+                 data-clean-condition="true"
+                 data-write-off-reported="false"
+                 data-accident-damage-reported="false"
+                 data-trim="M Sport">
+                <h2>BMW 320d M Sport</h2>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def sample_bca_json_script_html() -> str:
+    payload = json.dumps([make_record()])
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script id="__NEXT_DATA__" type="application/json">
+        {{"props": {{"pageProps": {{"searchResults": {payload}}}}}}}
+        </script>
+    </head>
+    <body><h1>BCA Portal</h1></body>
+    </html>
+    """
+
+
 def test_bca_acquisition_emits_a_strict_auction_lot() -> None:
     acquired_lots = BcaAcquisition().acquire([make_record()])
 
@@ -277,6 +323,31 @@ def test_manual_bca_importer_parses_json_and_records() -> None:
 
     assert importer.import_from_json("invalid json") == ()
     assert importer.import_from_json('{"not": "a list"}') == ()
+
+
+def test_manual_bca_importer_parses_dom_html_and_json_scripts(tmp_path: Path) -> None:
+    importer = ManualBcaImporter()
+
+    # 1. Parse from HTML DOM data attributes
+    lots_from_dom = importer.import_from_html(sample_bca_dom_html())
+    assert len(lots_from_dom) == 1
+    assert lots_from_dom[0].id == AuctionLotId("YF66 FEJ")
+    assert lots_from_dom[0].cap_clean_price == CapCleanPrice(5_450)
+
+    # 2. Parse from HTML embedded JSON script tags
+    lots_from_json_script = importer.import_from_html(sample_bca_json_script_html())
+    assert len(lots_from_json_script) == 1
+    assert lots_from_json_script[0].id == AuctionLotId("YF66 FEJ")
+
+    # 3. Parse from saved HTML file on disk
+    file_path = tmp_path / "bca_page.html"
+    file_path.write_text(sample_bca_dom_html(), encoding="utf-8")
+    lots_from_file = importer.import_from_html_file(str(file_path))
+    assert len(lots_from_file) == 1
+    assert lots_from_file[0].id == AuctionLotId("YF66 FEJ")
+
+    # 4. Non-existent file returns empty tuple
+    assert importer.import_from_html_file(str(tmp_path / "missing.html")) == ()
 
 
 def test_manual_autotrader_importer_parses_json_and_records() -> None:
