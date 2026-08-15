@@ -2,7 +2,6 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import Decimal
 from enum import StrEnum
 
 
@@ -25,68 +24,35 @@ class AutoTraderListingId:
 
 
 @dataclass(frozen=True)
-class Money:
-    amount: Decimal
-    currency: str
-
-    def __post_init__(self) -> None:
-        if not self.amount.is_finite():
-            raise ValueError("Money amount must be finite")
-        if (
-            len(self.currency) != 3
-            or not self.currency.isupper()
-            or not self.currency.isalpha()
-        ):
-            raise ValueError("Money currency must be an ISO 4217 currency code")
-        exponent = self.amount.normalize().as_tuple().exponent
-        if -exponent > 2:
-            raise ValueError("Money amount can have at most two fractional digits")
-
-
-@dataclass(frozen=True)
 class CashPrice:
-    money: Money
+    pounds: int
 
     def __post_init__(self) -> None:
-        if self.money.amount < 0:
+        if self.pounds < 0:
             raise ValueError("Cash Price cannot be negative")
 
 
 @dataclass(frozen=True)
 class CapCleanPrice:
-    money: Money
+    pounds: int
 
     def __post_init__(self) -> None:
-        if self.money.currency != "GBP":
-            raise ValueError("CAP Clean Price must be GBP")
-        if self.money.amount < 0:
+        if self.pounds < 0:
             raise ValueError("CAP Clean Price cannot be negative")
-
-    @property
-    def amount(self) -> Decimal:
-        return self.money.amount
 
 
 @dataclass(frozen=True)
 class AdvertisedPrice:
     cash_price: CashPrice
 
-    def __post_init__(self) -> None:
-        if self.cash_price.money.currency != "GBP":
-            raise ValueError("Advertised Price must be derived from a GBP Cash Price")
-
     @property
-    def amount(self) -> Decimal:
-        return self.cash_price.money.amount
+    def pounds(self) -> int:
+        return self.cash_price.pounds
 
 
 @dataclass(frozen=True)
 class PriceSpread:
-    money: Money
-
-    def __post_init__(self) -> None:
-        if self.money.currency != "GBP":
-            raise ValueError("Price Spread must be GBP")
+    pounds: int
 
     @classmethod
     def between(
@@ -94,12 +60,7 @@ class PriceSpread:
         advertised_price: AdvertisedPrice,
         cap_clean_price: CapCleanPrice,
     ) -> "PriceSpread":
-        return cls(
-            Money(
-                advertised_price.amount - cap_clean_price.amount,
-                "GBP",
-            )
-        )
+        return cls(advertised_price.pounds - cap_clean_price.pounds)
 
 
 @dataclass(frozen=True)
@@ -162,8 +123,6 @@ class AutoTraderListing:
     def __post_init__(self) -> None:
         if self.mileage < 0:
             raise ValueError("Auto Trader Listing mileage must be non-negative")
-        if self.cash_price.money.currency != "GBP":
-            raise ValueError("Auto Trader Listing must have a GBP Cash Price")
         if self.trim is not None and not self.trim.strip():
             raise ValueError(
                 "Auto Trader Listing trim must be a non-blank string or None"
@@ -225,7 +184,7 @@ class ComparableEvidence:
     def advertised_price(self) -> AdvertisedPrice:
         return min(
             self.market_comparables,
-            key=lambda item: item.advertised_price.amount,
+            key=lambda item: item.advertised_price.pounds,
         ).advertised_price
 
     def price_spread(self, cap_clean_price: CapCleanPrice) -> PriceSpread:

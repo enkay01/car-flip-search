@@ -12,6 +12,10 @@ _Avoid_: Auction car, BCA listing
 The CAP valuation for a vehicle in clean condition, shown on its BCA Auction Lot record. It is the acquisition-side benchmark for the MVP, not an observed auction purchase price.
 _Avoid_: CAP price, clean CAP
 
+**Whole-Pound Amount**:
+An exact count of British pounds with no pence. Every price, floor, and spread in this context is a Whole-Pound Amount; other currencies and partial-pound denominations are outside the domain.
+_Avoid_: Money, decimal price, currency amount
+
 **Price Spread**:
 The signed difference calculated as the lowest Advertised Price among a Candidate Vehicle's Market Comparables minus its CAP Clean Price. It is a valuation signal, not a profit estimate.
 _Avoid_: Profit, margin
