@@ -53,6 +53,7 @@ def test_comparable_evidence_rejects_duplicate_auto_trader_listing_ids() -> None
         AdvertisedPrice(CashPrice(12_500)),
         SellerType.DEALER,
         None,
+        False,
     )
 
     with pytest.raises(ValueError, match="duplicate"):
