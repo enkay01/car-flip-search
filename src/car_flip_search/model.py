@@ -1,6 +1,6 @@
 """Immutable domain types for auction and retail-market comparison."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cmp_to_key
@@ -469,6 +469,78 @@ def _matches(candidate: CandidateVehicle, criteria: CandidateFilter) -> bool:
     return True
 
 
+class _SortKey(NamedTuple):
+    number: int
+    text: str
+
+
+type _SortValueStrategy = Callable[[CandidateVehicle], _SortKey | None]
+
+
+def _text_sort_key(value: str) -> _SortKey:
+    return _SortKey(0, value)
+
+
+def _number_sort_key(value: int) -> _SortKey:
+    return _SortKey(value, "")
+
+
+_SORT_VALUE_STRATEGIES: dict[SortField, _SortValueStrategy] = {
+    SortField.MAKE: lambda candidate: _text_sort_key(
+        candidate.auction_lot.identity.make
+    ),
+    SortField.MODEL_VARIANT: lambda candidate: _text_sort_key(
+        candidate.auction_lot.identity.model_variant
+    ),
+    SortField.REGISTRATION_YEAR: lambda candidate: _number_sort_key(
+        candidate.auction_lot.identity.registration_year
+    ),
+    SortField.FUEL_TYPE: lambda candidate: _text_sort_key(
+        candidate.auction_lot.identity.fuel_type
+    ),
+    SortField.TRANSMISSION: lambda candidate: _text_sort_key(
+        candidate.auction_lot.identity.transmission
+    ),
+    SortField.BODY_STYLE: lambda candidate: _text_sort_key(
+        candidate.auction_lot.identity.body_style
+    ),
+    SortField.DOOR_COUNT: lambda candidate: _number_sort_key(
+        candidate.auction_lot.identity.door_count
+    ),
+    SortField.MILEAGE: lambda candidate: _number_sort_key(
+        candidate.auction_lot.mileage
+    ),
+    SortField.CAP_CLEAN_PRICE: lambda candidate: _number_sort_key(
+        candidate.auction_lot.cap_clean_price.pounds
+    ),
+    SortField.TRIM: lambda candidate: (
+        None
+        if candidate.auction_lot.trim is None
+        else _text_sort_key(candidate.auction_lot.trim)
+    ),
+    SortField.COMPARABLE_SUPPLY: lambda candidate: _number_sort_key(
+        candidate.comparable_supply
+    ),
+    SortField.PRICE_SPREAD: lambda candidate: (
+        None
+        if candidate.price_spread_pounds is None
+        else _number_sort_key(candidate.price_spread_pounds)
+    ),
+    SortField.RETAIL_FLOOR_SPREAD: lambda candidate: (
+        None
+        if candidate.retail_floor_spread_pounds is None
+        else _number_sort_key(candidate.retail_floor_spread_pounds)
+    ),
+}
+
+
+def _sort_value(candidate: CandidateVehicle, field: SortField) -> _SortKey | None:
+    try:
+        return _SORT_VALUE_STRATEGIES[field](candidate)
+    except KeyError as error:
+        raise ValueError(f"Unknown sort field: {field}") from error
+
+
 def _sort_stably(
     candidates: list[CandidateVehicle], criterion: SortCriterion
 ) -> list[CandidateVehicle]:
@@ -488,59 +560,3 @@ def _sort_stably(
         return 0
 
     return sorted(candidates, key=cmp_to_key(compare))
-
-
-class _SortKey(NamedTuple):
-    number: int
-    text: str
-
-
-def _sort_value(candidate: CandidateVehicle, field: SortField) -> _SortKey | None:
-    match field:
-        case SortField.MAKE:
-            return _text_sort_key(candidate.auction_lot.identity.make)
-        case SortField.MODEL_VARIANT:
-            return _text_sort_key(candidate.auction_lot.identity.model_variant)
-        case SortField.REGISTRATION_YEAR:
-            return _number_sort_key(candidate.auction_lot.identity.registration_year)
-        case SortField.FUEL_TYPE:
-            return _text_sort_key(candidate.auction_lot.identity.fuel_type)
-        case SortField.TRANSMISSION:
-            return _text_sort_key(candidate.auction_lot.identity.transmission)
-        case SortField.BODY_STYLE:
-            return _text_sort_key(candidate.auction_lot.identity.body_style)
-        case SortField.DOOR_COUNT:
-            return _number_sort_key(candidate.auction_lot.identity.door_count)
-        case SortField.MILEAGE:
-            return _number_sort_key(candidate.auction_lot.mileage)
-        case SortField.CAP_CLEAN_PRICE:
-            return _number_sort_key(candidate.auction_lot.cap_clean_price.pounds)
-        case SortField.TRIM:
-            trim = candidate.auction_lot.trim
-            return None if trim is None else _text_sort_key(trim)
-        case SortField.COMPARABLE_SUPPLY:
-            return _number_sort_key(candidate.comparable_supply)
-        case SortField.PRICE_SPREAD:
-            price_spread_value = candidate.price_spread_pounds
-            return (
-                None
-                if price_spread_value is None
-                else _number_sort_key(price_spread_value)
-            )
-        case SortField.RETAIL_FLOOR_SPREAD:
-            retail_floor_spread_value = candidate.retail_floor_spread_pounds
-            return (
-                None
-                if retail_floor_spread_value is None
-                else _number_sort_key(retail_floor_spread_value)
-            )
-        case _:
-            raise ValueError(f"Unknown sort field: {field}")
-
-
-def _text_sort_key(value: str) -> _SortKey:
-    return _SortKey(0, value)
-
-
-def _number_sort_key(value: int) -> _SortKey:
-    return _SortKey(value, "")

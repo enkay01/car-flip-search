@@ -308,27 +308,81 @@ def test_sort_by_comparable_supply() -> None:
     assert ids(result) == ["two", "one", "zero"]
 
 
-def test_sort_by_vehicle_attribute() -> None:
-    younger = candidate(
+@pytest.mark.parametrize(
+    ("field", "lower_value", "higher_value"),
+    [
+        (SortField.MAKE, "Audi", "Volvo"),
+        (SortField.MODEL_VARIANT, "A100d", "A200d"),
+        (SortField.REGISTRATION_YEAR, 2019, 2021),
+        (SortField.FUEL_TYPE, "Electric", "Petrol"),
+        (SortField.TRANSMISSION, "Automatic", "Manual"),
+        (SortField.BODY_STYLE, "Hatchback", "Saloon"),
+        (SortField.DOOR_COUNT, 3, 5),
+        (SortField.MILEAGE, 20_000, 40_000),
+        (SortField.CAP_CLEAN_PRICE, 8_000, 12_000),
+    ],
+)
+def test_sort_strategy_registry_orders_each_vehicle_field(
+    field: SortField, lower_value: str | int, higher_value: str | int
+) -> None:
+    lower = candidate(
         replace(
-            BASE_LOT,
-            id=AuctionLotId("young"),
-            identity=replace(BASE_IDENTITY, registration_year=2021),
+            vary_attribute(BASE_LOT, field.value, lower_value),
+            id=AuctionLotId("lower"),
         )
     )
-    older = candidate(
+    higher = candidate(
         replace(
-            BASE_LOT,
-            id=AuctionLotId("old"),
-            identity=replace(BASE_IDENTITY, registration_year=2019),
+            vary_attribute(BASE_LOT, field.value, higher_value),
+            id=AuctionLotId("higher"),
         )
     )
 
-    result = OpportunityList((older, younger)).sort(
-        SortCriterion(field=SortField.REGISTRATION_YEAR, descending=True)
-    )
+    result = OpportunityList((higher, lower)).sort(SortCriterion(field=field))
 
-    assert ids(result) == ["young", "old"]
+    assert ids(result) == ["lower", "higher"]
+
+
+def test_sort_strategy_registry_orders_optional_and_derived_fields() -> None:
+    cases = {
+        SortField.TRIM: (
+            candidate(replace(BASE_LOT, id=AuctionLotId("trim-lower"), trim="M Sport")),
+            candidate(replace(BASE_LOT, id=AuctionLotId("trim-higher"), trim="SE")),
+        ),
+        SortField.COMPARABLE_SUPPLY: (
+            candidate(replace(BASE_LOT, id=AuctionLotId("supply-lower")), supply=1),
+            candidate(replace(BASE_LOT, id=AuctionLotId("supply-higher")), supply=2),
+        ),
+        SortField.PRICE_SPREAD: (
+            candidate(
+                replace(BASE_LOT, id=AuctionLotId("spread-lower")),
+                supply=1,
+                lowest_price=9_000,
+            ),
+            candidate(
+                replace(BASE_LOT, id=AuctionLotId("spread-higher")),
+                supply=1,
+                lowest_price=12_000,
+            ),
+        ),
+        SortField.RETAIL_FLOOR_SPREAD: (
+            candidate(
+                replace(BASE_LOT, id=AuctionLotId("floor-lower")),
+                reference_prices=(8_000,),
+            ),
+            candidate(
+                replace(BASE_LOT, id=AuctionLotId("floor-higher")),
+                reference_prices=(12_000,),
+            ),
+        ),
+    }
+
+    for field, (lower, higher) in cases.items():
+        result = OpportunityList((higher, lower)).sort(SortCriterion(field=field))
+        assert ids(result) == [
+            lower.auction_lot.id.value,
+            higher.auction_lot.id.value,
+        ]
 
 
 def test_sort_by_trim_places_absent_value_last() -> None:
