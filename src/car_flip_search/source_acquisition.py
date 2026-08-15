@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import re
 from collections.abc import Iterable
 from html.parser import HTMLParser
 from typing import TypedDict
@@ -276,7 +277,113 @@ def _parse_bca_html(html_content: str) -> tuple[BcaRawRecord, ...]:
         extracted = _extract_bca_records_from_json_string(script_json)
         all_records.extend(extracted)
 
+    # Also extract cards from rendered BCA HTML search result pages
+    dom_cards = _extract_bca_cards_from_html(html_content)
+    all_records.extend(dom_cards)
+
     return tuple(all_records)
+
+
+def _extract_bca_cards_from_html(html_content: str) -> list[BcaRawRecord]:
+    card_splits = re.split(r'data-testid=["\']card-link-desktop["\']', html_content)
+    if len(card_splits) <= 1:
+        return []
+
+    records: list[BcaRawRecord] = []
+    for chunk in card_splits[1:]:
+        vrm_match = re.search(r'/lot/([^?\"\'/\s]+)', chunk)
+        if not vrm_match:
+            continue
+        vrm = vrm_match.group(1).replace("%20", " ").strip()
+
+        title_match = re.search(
+            r'VehicleResultCardDesktop__StyledLink[^\"]*\"[^>]*>([^<]+)</a>', chunk
+        )
+        if not title_match:
+            continue
+        title = title_match.group(1).strip()
+
+        items = re.findall(r'<p [^>]*>([^<]+)</p>', chunk)
+
+        mileage: int | None = None
+        year: int | None = None
+        fuel: str | None = None
+        transmission: str | None = None
+        doors: int | None = None
+
+        for item in items:
+            m_match = re.search(r"([\d,]+)\s*miles", item, re.IGNORECASE)
+            if m_match and mileage is None:
+                mileage = int(m_match.group(1).replace(",", ""))
+            y_match = re.search(r"\b(19\d\d|20\d\d)\b", item)
+            if y_match and year is None and "reg" in item.lower():
+                year = int(y_match.group(1))
+            item_lower = item.lower()
+            if item_lower in (
+                "petrol",
+                "diesel",
+                "electric",
+                "hybrid",
+                "petrol plug-in hybrid",
+                "diesel plug-in hybrid",
+            ):
+                fuel = item
+            if item_lower in (
+                "manual",
+                "automatic",
+                "auto clutch",
+                "auto/manual mode",
+                "cvt",
+                "cvt/manual mode",
+            ):
+                transmission = item
+            d_match = re.search(r"(\d+)\s*doors", item, re.IGNORECASE)
+            if d_match and doors is None:
+                doors = int(d_match.group(1))
+
+        cap_match = re.search(r"CAP Clean</p><p[^>]*>£([\d,]+)</p>", chunk)
+        if not cap_match:
+            continue
+        cap_clean = int(cap_match.group(1).replace(",", ""))
+
+        if (
+            vrm
+            and title
+            and mileage is not None
+            and year is not None
+            and fuel is not None
+            and transmission is not None
+            and doors is not None
+        ):
+            parts = title.split()
+            make = parts[0]
+            model_variant = parts[1] if len(parts) > 1 else ""
+            body_style = parts[-1] if len(parts) > 2 else "Hatchback"
+            trim = " ".join(parts[2:-1]) if len(parts) > 3 else None
+
+            identity: BcaRawIdentity = {
+                "make": make,
+                "model_variant": model_variant,
+                "registration_year": year,
+                "fuel_type": fuel,
+                "transmission": transmission,
+                "body_style": body_style,
+                "door_count": doors,
+            }
+            record: BcaRawRecord = {
+                "id": vrm,
+                "identity": identity,
+                "mileage": mileage,
+                "cap_clean_price": cap_clean,
+                "clean_condition": True,
+                "write_off_reported": False,
+                "accident_damage_reported": False,
+            }
+            if trim:
+                record["trim"] = trim
+            records.append(record)
+
+    return records
 
 
 def _extract_bca_records_from_json_string(script_json: str) -> list[BcaRawRecord]:

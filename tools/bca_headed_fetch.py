@@ -8,6 +8,7 @@ Enforces safe user-controlled access:
 - Immediate hard stop if bot/CAPTCHA challenges appear.
 """
 
+import contextlib
 import sys
 import time
 from argparse import ArgumentParser
@@ -70,7 +71,9 @@ def run_headed_fetch(options: FetchOptions) -> int:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("Playwright is not installed. To install: uv pip install playwright && playwright install chromium")
+        print(
+            "Playwright is not installed. To install: uv pip install playwright && playwright install chromium"
+        )
         print("Falling back to parsing existing saved files.")
         return parse_saved_pages(options.output_dir)
 
@@ -91,7 +94,9 @@ def run_headed_fetch(options: FetchOptions) -> int:
         page = context.new_page()
 
         print("\nOpening browser. Please navigate to BCA and log in if needed.")
-        print("Once on your search results page, press ENTER in this terminal to start capture...")
+        print(
+            "Once on your search results page, press ENTER in this terminal to start capture..."
+        )
         page.goto("https://www.bca.co.uk")
 
         try:
@@ -108,34 +113,74 @@ def run_headed_fetch(options: FetchOptions) -> int:
 
             if check_for_challenge_text(html_content):
                 print("WARNING: Bot verification or CAPTCHA challenge detected!")
-                print("Hard stop policy activated: halting automated capture without bypass.")
+                print(
+                    "Hard stop policy activated: halting automated capture without bypass."
+                )
                 break
 
-            output_file = options.output_dir / f"bca_search_page_{current_page}.html"
+            output_file = (
+                options.output_dir / f"bca_search_page_{current_page}.html"
+            )
             output_file.write_text(html_content, encoding="utf-8")
             print(f"Saved DOM to: {output_file}")
 
             if options.parse_on_save:
                 lots = importer.import_from_html(html_content)
-                print(f"Parsed {len(lots)} condition-eligible lots from page {current_page}.")
+                print(
+                    f"Parsed {len(lots)} condition-eligible lots from page {current_page}."
+                )
                 total_acquired += len(lots)
 
             if current_page >= options.max_pages:
-                print(f"Reached maximum page limit ({options.max_pages}). Capture complete.")
+                print(
+                    f"Reached maximum page limit ({options.max_pages}). Capture complete."
+                )
                 break
 
-            # Check for next page button
-            next_button = page.locator("a[rel='next'], button[aria-label='Next'], .pagination-next, a.next")
-            if next_button.count() == 0 or not next_button.first.is_visible():
-                print("No 'Next' pagination button found on page. Capture complete.")
-                break
-
-            print(f"Pacing: waiting {options.interval_seconds:.0f}s before moving to next page (1 page/min limit)...")
+            print(
+                f"Pacing: waiting {options.interval_seconds:.0f}s before moving to next page (1 page/min limit)..."
+            )
             time.sleep(options.interval_seconds)
 
-            print("Clicking next page...")
-            next_button.first.click()
-            page.wait_for_load_state("networkidle")
+            # Scroll to bottom to ensure pagination bar is visible in DOM
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(1000)
+
+            # Try locating BCA next page button with multiple selector strategies
+            next_selectors = [
+                "button[aria-label='Go to next page']",
+                f"button[aria-label='Go to page {current_page + 1}']",
+                "button:has-text('next')",
+                "a:has-text('next')",
+                "a[rel='next']",
+                ".pagination-next",
+            ]
+
+            clicked = False
+            for selector in next_selectors:
+                with contextlib.suppress(TimeoutError, RuntimeError, ValueError):
+                    btn = page.locator(selector)
+                    if btn.count() > 0 and btn.first.is_visible():
+                        print(f"Clicking next page using '{selector}'...")
+                        btn.first.click()
+                        page.wait_for_load_state("networkidle")
+                        clicked = True
+                        break
+
+            if not clicked:
+                print(
+                    f"\nCould not automatically locate the next page button for page {current_page + 1}."
+                )
+                try:
+                    user_input = input(
+                        f"Please navigate to page {current_page + 1} in the browser and press ENTER to continue (or 'q' to finish): "
+                    )
+                    if user_input.strip().lower() == "q":
+                        print("User chose to end capture.")
+                        break
+                except (EOFError, KeyboardInterrupt):
+                    break
+
             current_page += 1
 
         browser.close()

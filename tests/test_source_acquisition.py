@@ -325,6 +325,31 @@ def test_manual_bca_importer_parses_json_and_records() -> None:
     assert importer.import_from_json('{"not": "a list"}') == ()
 
 
+def sample_bca_live_card_html() -> str:
+    return """
+    <!DOCTYPE html>
+    <html>
+    <body>
+        <div class="VehicleResultCardDesktop">
+            <a data-testid="card-link-desktop" href="https://www.bca.co.uk/lot/KS18%20ZFM?q=test"></a>
+            <a class="VehicleResultCardDesktop__StyledLink-sc-123" href="https://www.bca.co.uk/lot/KS18%20ZFM">MERCEDES-BENZ A160 1.6 SPORT ED.DCT Hatchback</a>
+            <ul>
+                <li><p color="grey-blue">84,468 miles (Warranted)</p></li>
+                <li><p color="grey-blue">2018 (18 reg)</p></li>
+                <li><p color="grey-blue">Petrol</p></li>
+                <li><p color="grey-blue">Auto Clutch</p></li>
+                <li><p color="grey-blue">5 doors</p></li>
+            </ul>
+            <div>
+                <p>CAP Clean</p>
+                <p>£7,800</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
 def test_manual_bca_importer_parses_dom_html_and_json_scripts(tmp_path: Path) -> None:
     importer = ManualBcaImporter()
 
@@ -339,14 +364,25 @@ def test_manual_bca_importer_parses_dom_html_and_json_scripts(tmp_path: Path) ->
     assert len(lots_from_json_script) == 1
     assert lots_from_json_script[0].id == AuctionLotId("YF66 FEJ")
 
-    # 3. Parse from saved HTML file on disk
+    # 3. Parse from live BCA search result card DOM
+    lots_from_live_cards = importer.import_from_html(sample_bca_live_card_html())
+    assert len(lots_from_live_cards) == 1
+    assert lots_from_live_cards[0].id == AuctionLotId("KS18 ZFM")
+    assert lots_from_live_cards[0].identity.make == "MERCEDES-BENZ"
+    assert lots_from_live_cards[0].identity.model_variant == "A160"
+    assert lots_from_live_cards[0].identity.registration_year == 2018
+    assert lots_from_live_cards[0].mileage == 84_468
+    assert lots_from_live_cards[0].cap_clean_price == CapCleanPrice(7_800)
+    assert lots_from_live_cards[0].trim == "1.6 SPORT ED.DCT"
+
+    # 4. Parse from saved HTML file on disk
     file_path = tmp_path / "bca_page.html"
     file_path.write_text(sample_bca_dom_html(), encoding="utf-8")
     lots_from_file = importer.import_from_html_file(str(file_path))
     assert len(lots_from_file) == 1
     assert lots_from_file[0].id == AuctionLotId("YF66 FEJ")
 
-    # 4. Non-existent file returns empty tuple
+    # 5. Non-existent file returns empty tuple
     assert importer.import_from_html_file(str(tmp_path / "missing.html")) == ()
 
 
