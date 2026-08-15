@@ -11,10 +11,14 @@ from car_flip_search import (
     CashPrice,
     ComparableEvidence,
     CoreVehicleIdentity,
+    HighMileageReference,
     MarketComparable,
     MarketSnapshot,
     NoComparableEvidence,
+    NoRetailFloorEvidence,
     OpportunityList,
+    RetailFloor,
+    RetailFloorEvidence,
     SellerType,
 )
 
@@ -72,7 +76,9 @@ def test_opportunity_list_rejects_duplicate_auction_lot_ids() -> None:
     )
 
     with pytest.raises(ValueError, match="duplicate"):
-        OpportunityList([CandidateVehicle(lot, NoComparableEvidence())] * 2)
+        OpportunityList(
+            [CandidateVehicle(lot, NoComparableEvidence(), NoRetailFloorEvidence())] * 2
+        )
 
 
 def test_source_prices_reject_negative_whole_pound_amounts() -> None:
@@ -80,3 +86,43 @@ def test_source_prices_reject_negative_whole_pound_amounts() -> None:
         CashPrice(-1)
     with pytest.raises(ValueError):
         CapCleanPrice(-1)
+    with pytest.raises(ValueError):
+        RetailFloor(-1)
+
+
+def test_high_mileage_reference_rejects_negative_mileage() -> None:
+    identity = CoreVehicleIdentity(
+        "Ford", "Focus", 2021, "Petrol", "Manual", "Hatchback", 5
+    )
+
+    with pytest.raises(ValueError):
+        HighMileageReference(
+            AutoTraderListingId("at-456"),
+            identity,
+            -1,
+            AdvertisedPrice(CashPrice(12_500)),
+            SellerType.DEALER,
+            None,
+        )
+
+
+def test_retail_floor_evidence_requires_at_least_one_reference() -> None:
+    with pytest.raises(ValueError, match="requires"):
+        RetailFloorEvidence(())
+
+
+def test_retail_floor_evidence_rejects_duplicate_reference_listing_ids() -> None:
+    identity = CoreVehicleIdentity(
+        "Ford", "Focus", 2021, "Petrol", "Manual", "Hatchback", 5
+    )
+    reference = HighMileageReference(
+        AutoTraderListingId("at-456"),
+        identity,
+        60_000,
+        AdvertisedPrice(CashPrice(12_500)),
+        SellerType.DEALER,
+        None,
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        RetailFloorEvidence((reference, reference))
