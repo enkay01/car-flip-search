@@ -13,13 +13,13 @@ from .model import (
     CoreVehicleIdentity,
     MarketComparable,
     MarketSnapshot,
-    Money,
     NoComparableEvidence,
     OpportunityList,
     PriceSpread,
     SellerType,
 )
 from .opportunity_search import OpportunitySearch
+from .source_acquisition import BcaAcquisition, BcaRawRecord
 
 __all__ = [
     "AdvertisedPrice",
@@ -27,6 +27,8 @@ __all__ = [
     "AuctionLotId",
     "AutoTraderListing",
     "AutoTraderListingId",
+    "BcaAcquisition",
+    "BcaRawRecord",
     "CandidateVehicle",
     "CapCleanPrice",
     "CashPrice",
@@ -34,7 +36,6 @@ __all__ = [
     "CoreVehicleIdentity",
     "MarketComparable",
     "MarketSnapshot",
-    "Money",
     "NoComparableEvidence",
     "OpportunityList",
     "OpportunitySearch",

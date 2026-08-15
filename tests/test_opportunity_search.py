@@ -1,5 +1,3 @@
-from decimal import Decimal
-
 import pytest
 
 from car_flip_search import (
@@ -15,7 +13,6 @@ from car_flip_search import (
     CoreVehicleIdentity,
     MarketComparable,
     MarketSnapshot,
-    Money,
     NoComparableEvidence,
     OpportunityList,
     OpportunitySearch,
@@ -38,13 +35,13 @@ def test_comparison_eligible_candidate_has_comparable_supply_and_price_spread() 
         id=AuctionLotId("bca-123"),
         identity=identity,
         mileage=41_000,
-        cap_clean_price=CapCleanPrice(Money(Decimal("10000.00"), "GBP")),
+        cap_clean_price=CapCleanPrice(10_000),
     )
     listing = AutoTraderListing(
         id=AutoTraderListingId("at-456"),
         identity=identity,
         mileage=40_000,
-        cash_price=CashPrice(Money(Decimal("12500.00"), "GBP")),
+        cash_price=CashPrice(12_500),
         seller_type=SellerType.DEALER,
     )
 
@@ -70,9 +67,7 @@ def test_comparison_eligible_candidate_has_comparable_supply_and_price_spread() 
         )
     )
     assert opportunities.candidates[0].comparable_supply == 1
-    assert opportunities.candidates[0].price_spread == PriceSpread(
-        Money(Decimal("2500.00"), "GBP")
-    )
+    assert opportunities.candidates[0].price_spread == PriceSpread(2_500)
 
 
 def test_listing_with_different_core_vehicle_identity_is_not_a_market_comparable() -> (
@@ -88,13 +83,13 @@ def test_listing_with_different_core_vehicle_identity_is_not_a_market_comparable
         AuctionLotId("bca-123"),
         auction_identity,
         40_000,
-        CapCleanPrice(Money(Decimal("10000.00"), "GBP")),
+        CapCleanPrice(10_000),
     )
     listing = AutoTraderListing(
         AutoTraderListingId("at-456"),
         listing_identity,
         40_000,
-        CashPrice(Money(Decimal("12500.00"), "GBP")),
+        CashPrice(12_500),
         SellerType.DEALER,
     )
 
@@ -118,13 +113,13 @@ def test_market_comparable_respects_the_mileage_band_boundary(
         AuctionLotId("bca-123"),
         identity,
         40_000,
-        CapCleanPrice(Money(Decimal("10000.00"), "GBP")),
+        CapCleanPrice(10_000),
     )
     listing = AutoTraderListing(
         AutoTraderListingId("at-456"),
         identity,
         listing_mileage,
-        CashPrice(Money(Decimal("12500.00"), "GBP")),
+        CashPrice(12_500),
         SellerType.DEALER,
     )
 
@@ -146,13 +141,13 @@ def test_opportunity_search_rejects_multiple_auction_lots() -> None:
         AuctionLotId("bca-123"),
         identity,
         41_000,
-        CapCleanPrice(Money(Decimal("10000.00"), "GBP")),
+        CapCleanPrice(10_000),
     )
     listing = AutoTraderListing(
         AutoTraderListingId("at-456"),
         identity,
         40_000,
-        CashPrice(Money(Decimal("12500.00"), "GBP")),
+        CashPrice(12_500),
         SellerType.PRIVATE,
     )
 
@@ -168,20 +163,20 @@ def test_opportunity_search_rejects_multiple_auto_trader_listings() -> None:
         AuctionLotId("bca-123"),
         identity,
         41_000,
-        CapCleanPrice(Money(Decimal("10000.00"), "GBP")),
+        CapCleanPrice(10_000),
     )
     listing = AutoTraderListing(
         AutoTraderListingId("at-456"),
         identity,
         40_000,
-        CashPrice(Money(Decimal("12500.00"), "GBP")),
+        CashPrice(12_500),
         SellerType.PRIVATE,
     )
     another_listing = AutoTraderListing(
         AutoTraderListingId("at-789"),
         identity,
         40_000,
-        CashPrice(Money(Decimal("12600.00"), "GBP")),
+        CashPrice(12_600),
         SellerType.PRIVATE,
     )
 
@@ -197,18 +192,16 @@ def test_comparison_eligible_candidate_can_have_a_negative_price_spread() -> Non
         AuctionLotId("bca-123"),
         identity,
         41_000,
-        CapCleanPrice(Money(Decimal("14000.00"), "GBP")),
+        CapCleanPrice(14_000),
     )
     listing = AutoTraderListing(
         AutoTraderListingId("at-456"),
         identity,
         40_000,
-        CashPrice(Money(Decimal("12500.00"), "GBP")),
+        CashPrice(12_500),
         SellerType.PRIVATE,
     )
 
     opportunity_list = OpportunitySearch().search([lot], MarketSnapshot([listing]))
 
-    assert opportunity_list.candidates[0].price_spread == PriceSpread(
-        Money(Decimal("-1500.00"), "GBP")
-    )
+    assert opportunity_list.candidates[0].price_spread == PriceSpread(-1_500)
