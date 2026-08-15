@@ -8,10 +8,13 @@ from .model import (
     AutoTraderListing,
     CandidateVehicle,
     ComparableEvidence,
+    HighMileageReference,
     MarketComparable,
     MarketSnapshot,
     NoComparableEvidence,
+    NoRetailFloorEvidence,
     OpportunityList,
+    RetailFloorEvidence,
 )
 
 MILEAGE_BAND_MILES = 15_000
@@ -27,14 +30,15 @@ class OpportunitySearch:
             tuple(
                 CandidateVehicle(
                     auction_lot,
-                    _select_evidence(auction_lot, market_snapshot),
+                    _select_comparable_evidence(auction_lot, market_snapshot),
+                    _select_retail_floor_evidence(auction_lot, market_snapshot),
                 )
                 for auction_lot in auction_lots
             )
         )
 
 
-def _select_evidence(
+def _select_comparable_evidence(
     auction_lot: AuctionLot,
     market_snapshot: MarketSnapshot,
 ) -> ComparableEvidence | NoComparableEvidence:
@@ -46,6 +50,20 @@ def _select_evidence(
     if not comparables:
         return NoComparableEvidence()
     return ComparableEvidence(comparables)
+
+
+def _select_retail_floor_evidence(
+    auction_lot: AuctionLot,
+    market_snapshot: MarketSnapshot,
+) -> RetailFloorEvidence | NoRetailFloorEvidence:
+    references = tuple(
+        _to_high_mileage_reference(auction_lot, listing)
+        for listing in market_snapshot.listings
+        if _is_high_mileage_reference(auction_lot, listing)
+    )
+    if not references:
+        return NoRetailFloorEvidence()
+    return RetailFloorEvidence(references)
 
 
 def _to_market_comparable(
@@ -63,6 +81,20 @@ def _to_market_comparable(
     )
 
 
+def _to_high_mileage_reference(
+    auction_lot: AuctionLot,
+    listing: AutoTraderListing,
+) -> HighMileageReference:
+    return HighMileageReference(
+        listing_id=listing.id,
+        identity=listing.identity,
+        mileage=listing.mileage,
+        advertised_price=AdvertisedPrice(listing.cash_price),
+        seller_type=listing.seller_type,
+        trim=listing.trim,
+    )
+
+
 def _is_market_comparable(
     auction_lot: AuctionLot,
     listing: AutoTraderListing,
@@ -70,6 +102,16 @@ def _is_market_comparable(
     return (
         listing.identity == auction_lot.identity
         and abs(listing.mileage - auction_lot.mileage) <= MILEAGE_BAND_MILES
+    )
+
+
+def _is_high_mileage_reference(
+    auction_lot: AuctionLot,
+    listing: AutoTraderListing,
+) -> bool:
+    return (
+        listing.identity == auction_lot.identity
+        and listing.mileage - auction_lot.mileage > MILEAGE_BAND_MILES
     )
 
 

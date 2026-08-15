@@ -16,6 +16,7 @@ from car_flip_search import (
     MarketComparable,
     MarketSnapshot,
     NoComparableEvidence,
+    NoRetailFloorEvidence,
     OpportunityList,
     OpportunitySearch,
     PriceSpread,
@@ -72,6 +73,7 @@ def test_matching_listing_is_selected_as_a_market_comparable() -> None:
                         ),
                     )
                 ),
+                NoRetailFloorEvidence(),
             ),
         )
     )
