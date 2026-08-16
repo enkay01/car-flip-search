@@ -1,72 +1,48 @@
-"""Headed browser capture tool for BCA search results pages.
+"""User-assisted BCA search capture command.
 
-Enforces safe user-controlled access:
-- Headed browser workflow with human-in-the-loop authentication.
-- Conservative cadence (max 1 page per minute / 60-second interval).
-- Bounded scope (max 5 pages per run).
-- DOM saving to local files and local parsing via ManualBcaImporter.
-- Immediate hard stop if bot/CAPTCHA challenges appear.
+Opens a visible Playwright browser with a fresh session, lets the user log in
+and run one search, waits for Enter, then captures up to ``page-limit`` pages
+at ``page-delay`` intervals. The capture is saved under
+``data/captures/bca/<capture_id>`` and never overwritten.
+
+The tool never receives, stores, or persists BCA credentials or sessions, and
+it never attempts to bypass a CAPTCHA or access challenge: a challenge stops
+further navigation and everything captured so far is still saved.
 """
 
-import contextlib
+from __future__ import annotations
+
 import sys
 import time
 from argparse import ArgumentParser
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
-from car_flip_search import ManualBcaImporter
+from car_flip_search import (
+    CaptureChallengeError,
+    CaptureOptions,
+    print_capture_summary,
+    run_capture,
+    save_capture,
+)
 
-
-@dataclass(frozen=True, kw_only=True)
-class FetchOptions:
-    output_dir: Path
-    max_pages: int = 5
-    interval_seconds: float = 60.0
-    parse_on_save: bool = True
-    dry_run: bool = False
-
-
-def check_for_challenge_text(html_content: str) -> bool:
-    """Inspect page HTML for anti-bot or CAPTCHA challenge markers."""
-    lower_content = html_content.lower()
-    markers = (
-        "cf-browser-verification",
-        "challenge-platform",
-        "g-recaptcha",
-        "hcaptcha",
-        "perimeterx",
-        "please verify you are a human",
-        "access denied - captcha",
-        "attention required! | cloudflare",
-    )
-    return any(marker in lower_content for marker in markers)
-
-
-def parse_saved_pages(output_dir: Path) -> int:
-    """Parse all saved HTML pages in output_dir and print acquired lots summary."""
-    importer = ManualBcaImporter()
-    total_lots = 0
-    html_files = sorted(output_dir.glob("*.html"))
-    if not html_files:
-        print(f"No HTML files found in {output_dir}")
-        return 0
-
-    print(f"Parsing {len(html_files)} saved BCA HTML files...")
-    for file_path in html_files:
-        lots = importer.import_from_html_file(str(file_path))
-        print(f"  - {file_path.name}: {len(lots)} condition-eligible lots parsed")
-        total_lots += len(lots)
-
-    print(f"Total acquired Auction Lots from saved pages: {total_lots}")
-    return total_lots
+try:
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import Page, sync_playwright
+except ImportError:  # pragma: no cover - exercised only when playwright is missing
+    PlaywrightError = None  # type: ignore[assignment,misc]
+    Page = None  # type: ignore[assignment,misc]
+    sync_playwright = None  # type: ignore[assignment,misc]
 
 
 def _countdown_pacing(seconds: float) -> None:
-    """Show a real-time countdown in the terminal during cadence delay."""
+    """Show a real-time countdown during the cadence delay."""
     remaining = int(seconds)
-    print(f"Pacing cadence: {remaining}s remaining before next page...", end="", flush=True)
+    print(
+        f"Pacing cadence: {remaining}s remaining before next page...",
+        end="",
+        flush=True,
+    )
     while remaining > 0:
         time.sleep(1)
         remaining -= 1
@@ -75,173 +51,158 @@ def _countdown_pacing(seconds: float) -> None:
     print(" Ready!")
 
 
-def run_headed_fetch(options: FetchOptions) -> int:
-    """Execute the headed Playwright browser capture session."""
-    if options.dry_run:
-        return parse_saved_pages(options.output_dir)
+class _PlaywrightPageSource:
+    """PageSource adapter over a Playwright page (the browser seam)."""
 
-    try:
-        from playwright.sync_api import Error as PlaywrightError
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print(
-            "Playwright is not installed. To install: uv pip install playwright && playwright install chromium"
-        )
-        print("Falling back to parsing existing saved files.")
-        return parse_saved_pages(options.output_dir)
+    def __init__(self, page: Page) -> None:
+        self._page = page
+        self._next_page_number = 2
 
-    options.output_dir.mkdir(parents=True, exist_ok=True)
-    importer = ManualBcaImporter()
-    total_acquired = 0
+    def current_html(self) -> str:
+        self._raise_if_login_redirect()
+        try:
+            self._page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+            self._page.wait_for_timeout(500)
+            self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            self._page.wait_for_timeout(1000)
+            return self._page.content()
+        except (PlaywrightError, TimeoutError, RuntimeError, ValueError) as error:
+            raise CaptureChallengeError(
+                f"Could not read the current page: {error}"
+            ) from error
+
+    def advance(self) -> bool:
+        self._raise_if_login_redirect()
+        next_number = self._next_page_number
+        self._next_page_number += 1
+        try:
+            self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            self._page.wait_for_timeout(1000)
+
+            next_selectors = (
+                "button[aria-label='Go to next page']",
+                f"button[aria-label='Go to page {next_number}']",
+                "button:has-text('next')",
+                "a:has-text('next')",
+                "a[rel='next']",
+            )
+            for selector in next_selectors:
+                button = self._page.locator(selector)
+                if button.count() > 0 and button.first.is_visible():
+                    print(f"Clicking next page using '{selector}'...")
+                    button.first.click(timeout=5000)
+                    self._page.wait_for_timeout(3000)
+                    self._raise_if_login_redirect()
+                    return True
+        except (PlaywrightError, TimeoutError, RuntimeError, ValueError) as error:
+            raise CaptureChallengeError(
+                f"Could not navigate to the next page: {error}"
+            ) from error
+
+        try:
+            user_input = input(
+                f"Could not click the next-page button automatically. "
+                f"Click page {next_number} in the browser and press ENTER here, "
+                f"or type 'q' to stop: "
+            )
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return user_input.strip().lower() != "q"
+
+    def _raise_if_login_redirect(self) -> None:
+        url = self._page.url.lower()
+        if any(token in url for token in ("/login", "/signin", "/sign-in", "/logon")):
+            raise CaptureChallengeError(
+                "BCA redirected to a login page — the session expired or access "
+                "was denied. Halting without bypass; pages captured so far are saved."
+            )
+
+
+def run_capture_command(options: CaptureOptions) -> int:
+    """Open the browser, run one capture, save it, and print the summary."""
+    if sync_playwright is None:
+        print("Playwright is required for the BCA capture command.")
+        print("Install with: uv pip install playwright && playwright install chromium")
+        return 2
 
     print("=" * 70)
-    print("BCA Headed Browser Capture Tool")
-    print(f"Output directory : {options.output_dir}")
-    print(f"Max pages        : {options.max_pages}")
-    print(f"Interval         : {options.interval_seconds}s (cadence: max 1 page/min)")
+    print("BCA capture command")
+    print(f"Search name : {options.search_name}")
+    print(f"Page limit  : {options.page_limit}")
+    print(f"Page delay  : {options.page_delay_seconds}s")
+    print(f"Capture dir : {options.data_dir}")
     print("=" * 70)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)
-        context = browser.new_context()
-        page = context.new_page()
-
-        print("\n[Step 1] Opening browser window to https://www.bca.co.uk ...")
-        print("Please log in to your BCA account and navigate to your search results page.")
-        print("When the search results are displayed on screen, return here and press ENTER.\n")
-        page.goto("https://www.bca.co.uk")
-
         try:
-            input("[Press ENTER when ready on BCA search results page] > ")
-        except (EOFError, KeyboardInterrupt):
-            print("\nAborting capture session.")
-            browser.close()
-            return 0
+            # Fresh context: no stored credentials, cookies, or login sessions.
+            context = browser.new_context()
+            page = context.new_page()
+            page.goto("https://www.bca.co.uk", wait_until="domcontentloaded")
 
-        current_page = 1
-        while current_page <= options.max_pages:
-            print(f"\n==================== Capturing Page {current_page} of {options.max_pages} ====================")
-            
-            # Scroll to trigger any lazy-loaded cards
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-            page.wait_for_timeout(500)
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1000)
-
-            html_content = page.content()
-
-            if check_for_challenge_text(html_content):
-                print("WARNING: Bot verification or CAPTCHA challenge detected!")
-                print("Hard stop policy activated: halting automated capture without bypass.")
-                break
-
-            output_file = (
-                options.output_dir / f"bca_search_page_{current_page}.html"
+            print("\n[Step 1] A visible browser opened at www.bca.co.uk.")
+            print("Log in to your BCA account and run your search in that browser.")
+            print("The tool does not see or store your username or password.")
+            print(
+                "When your search results are displayed, return here and press ENTER.\n"
             )
-            output_file.write_text(html_content, encoding="utf-8")
-            print(f"Saved DOM ({len(html_content):,} bytes) to: {output_file}")
+            try:
+                input("[Press ENTER when your BCA search results are on screen] > ")
+            except (EOFError, KeyboardInterrupt):
+                print("\nCapture aborted — nothing was saved.")
+                return 1
 
-            if options.parse_on_save:
-                lots = importer.import_from_html(html_content)
-                print(
-                    f"Parsed {len(lots)} condition-eligible lots with CAP Clean Prices from page {current_page}."
-                )
-                total_acquired += len(lots)
+            page_source = _PlaywrightPageSource(page)
+            outcome = run_capture(options, page_source, pace=_countdown_pacing)
+        finally:
+            browser.close()
 
-            if current_page >= options.max_pages:
-                print(
-                    f"\nReached maximum page limit ({options.max_pages}). Capture session complete."
-                )
-                break
-
-            # Pacing countdown
-            print()
-            _countdown_pacing(options.interval_seconds)
-
-            # Scroll down to make sure bottom pagination controls are visible
-            print(f"Looking for next page button (Page {current_page + 1})...")
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1000)
-
-            next_selectors = [
-                "button[aria-label='Go to next page']",
-                f"button[aria-label='Go to page {current_page + 1}']",
-                "button:has-text('next')",
-                "a:has-text('next')",
-                "a[rel='next']",
-            ]
-
-            clicked = False
-            for selector in next_selectors:
-                with contextlib.suppress(PlaywrightError, TimeoutError, RuntimeError, ValueError):
-                    btn = page.locator(selector)
-                    if btn.count() > 0 and btn.first.is_visible():
-                        print(f"Clicking next page using '{selector}'...")
-                        btn.first.click(timeout=5000)
-                        # Wait for DOM transition without blocking on networkidle
-                        page.wait_for_timeout(3000)
-                        clicked = True
-                        break
-
-            if not clicked:
-                print(
-                    f"\nCould not automatically click the next button for page {current_page + 1}."
-                )
-                try:
-                    user_input = input(
-                        f"Please click 'next' in the browser to view page {current_page + 1}, then press ENTER here (or type 'q' to stop): "
-                    )
-                    if user_input.strip().lower() == "q":
-                        print("User chose to end capture.")
-                        break
-                except (EOFError, KeyboardInterrupt):
-                    break
-
-            current_page += 1
-
-        browser.close()
-
-    print("\n======================================================================")
-    print(f"Capture session completed successfully! Total lots acquired: {total_acquired}")
-    print("======================================================================")
-    return total_acquired
+    capture_dir = save_capture(outcome, options)
+    print_capture_summary(outcome, capture_dir)
+    return 0
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    parser = ArgumentParser(description="BCA Headed Browser Page Capture Tool")
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = ArgumentParser(description="BCA search capture command")
     parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("data/bca_pages"),
-        help="Directory where captured HTML pages are stored",
+        "--search-name",
+        required=True,
+        help="Name for this capture, saved in the manifest",
     )
     parser.add_argument(
-        "--max-pages",
+        "--page-limit",
         type=int,
         default=5,
-        help="Maximum number of search pages to capture (default: 5)",
+        help="Maximum number of result pages to capture (default: 5)",
     )
     parser.add_argument(
-        "--interval",
+        "--page-delay",
         type=float,
         default=60.0,
-        help="Delay in seconds between page navigations (default: 60.0s / 1 page per min)",
+        help=(
+            "Delay in seconds between page movements; must be greater than zero "
+            "(default: 60.0)"
+        ),
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Only parse previously saved HTML pages without launching browser",
+        "--data-dir",
+        type=Path,
+        default=Path("data/captures/bca"),
+        help="Directory where captures are saved (default: data/captures/bca)",
     )
-
     args = parser.parse_args(argv)
-    options = FetchOptions(
-        output_dir=args.output_dir,
-        max_pages=args.max_pages,
-        interval_seconds=args.interval,
-        dry_run=args.dry_run,
-    )
-    run_headed_fetch(options)
+    try:
+        options = CaptureOptions(
+            search_name=args.search_name,
+            page_limit=args.page_limit,
+            page_delay_seconds=args.page_delay,
+            data_dir=args.data_dir,
+        )
+    except ValueError as error:
+        parser.error(str(error))
+    return run_capture_command(options)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))

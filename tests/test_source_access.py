@@ -12,20 +12,18 @@ from car_flip_search import (
     AutoTraderListingId,
     AutoTraderSourceClient,
     BackoffPolicy,
-    BcaAcquisition,
-    BcaCredentials,
-    BcaSourceClient,
     BotChallengeDetectedError,
     HttpRequest,
     HttpResponse,
     HttpTransport,
+    ManualBcaImporter,
     OpportunitySearch,
     RepeatedThrottlingError,
-    SourceCache,
     SourceClientOptions,
     assess_auto_trader_access,
     assess_bca_access,
     detect_bot_challenge,
+    detect_challenge_markers,
     parse_retry_after,
 )
 
@@ -45,29 +43,6 @@ class FakeHttpTransport(HttpTransport):
         if not self._responses:
             return HttpResponse(status_code=404, headers={}, body="{}")
         return self._responses.pop(0)
-
-
-def sample_bca_payload() -> str:
-    return json.dumps(
-        {
-            "id": "YF66 FEJ",
-            "identity": {
-                "make": "BMW",
-                "model_variant": "320d",
-                "registration_year": 2016,
-                "fuel_type": "Diesel",
-                "transmission": "Automatic",
-                "body_style": "Saloon",
-                "door_count": 4,
-            },
-            "mileage": 130319,
-            "cap_clean_price": 5450,
-            "clean_condition": True,
-            "write_off_reported": False,
-            "accident_damage_reported": False,
-            "trim": "M Sport",
-        }
-    )
 
 
 def sample_autotrader_payload() -> str:
@@ -91,15 +66,11 @@ def sample_autotrader_payload() -> str:
     )
 
 
-def test_assess_bca_access_distinguishes_permitted_and_manual_routes() -> None:
-    no_creds_decision = assess_bca_access(None)
-    assert no_creds_decision.status == AccessStatus.NO_GO_MANUAL_REQUIRED
-    assert "manual" in no_creds_decision.reason.lower()
-
-    valid_creds = BcaCredentials(api_key="bca-secret-key-123")
-    permitted_decision = assess_bca_access(valid_creds)
-    assert permitted_decision.status == AccessStatus.PERMITTED_AUTOMATED
-    assert "bca" in permitted_decision.mechanism.lower()
+def test_assess_bca_access_describes_user_assisted_capture() -> None:
+    decision = assess_bca_access()
+    assert decision.status == AccessStatus.PERMITTED_USER_ASSISTED
+    assert "headed browser" in decision.mechanism.lower()
+    assert "api" not in decision.mechanism.lower()
 
 
 def test_assess_autotrader_access_distinguishes_permitted_and_manual_routes() -> None:
@@ -116,11 +87,6 @@ def test_assess_autotrader_access_distinguishes_permitted_and_manual_routes() ->
 
 
 def test_credentials_mask_secrets_and_prevent_leakage() -> None:
-    bca_creds = BcaCredentials(api_key="secret-api-key-999", bearer_token="jwt-token")
-    assert "secret-api-key-999" not in repr(bca_creds)
-    assert "jwt-token" not in str(bca_creds)
-    assert "***" in repr(bca_creds)
-
     at_creds = AutoTraderCredentials(
         client_id="my-client-id",
         client_secret="my-super-secret",
@@ -132,13 +98,6 @@ def test_credentials_mask_secrets_and_prevent_leakage() -> None:
 
 
 def test_credentials_memory_revocation() -> None:
-    bca_creds = BcaCredentials(api_key="secret-key", bearer_token="token")
-    assert bca_creds.is_valid()
-    bca_creds.revoke()
-    assert not bca_creds.is_valid()
-    assert bca_creds.api_key == ""
-    assert bca_creds.bearer_token is None
-
     at_creds = AutoTraderCredentials(
         client_id="client-1", client_secret="secret-1", access_token="token-1"
     )
@@ -152,139 +111,9 @@ def test_credentials_memory_revocation() -> None:
 
 def test_credentials_reject_empty_values() -> None:
     with pytest.raises(ValueError, match="non-blank"):
-        BcaCredentials(api_key="  ")
-    with pytest.raises(ValueError, match="non-blank"):
         AutoTraderCredentials(client_id="", client_secret="secret")
     with pytest.raises(ValueError, match="non-blank"):
         AutoTraderCredentials(client_id="client", client_secret="  ")
-
-
-def test_bca_source_client_demonstrates_minimal_authenticated_read() -> None:
-    transport = FakeHttpTransport(
-        [
-            HttpResponse(
-                status_code=200,
-                headers={"Content-Type": "application/json"},
-                body=sample_bca_payload(),
-            )
-        ]
-    )
-    creds = BcaCredentials(api_key="bca-test-key", bearer_token="test-bearer")
-    client = BcaSourceClient(creds, transport)
-
-    record = client.read_lot("YF66 FEJ")
-    assert record is not None
-    assert record["id"] == "YF66 FEJ"
-    assert record["cap_clean_price"] == 5450
-    assert record["mileage"] == 130319
-
-    assert len(transport.sent_requests) == 1
-    req = transport.sent_requests[0]
-    assert req.headers["X-API-Key"] == "bca-test-key"
-    assert req.headers["Authorization"] == "Bearer test-bearer"
-    assert "YF66 FEJ" in req.url
-
-
-def test_bca_source_client_caches_and_deduplicates() -> None:
-    transport = FakeHttpTransport(
-        [
-            HttpResponse(
-                status_code=200,
-                headers={"Content-Type": "application/json"},
-                body=sample_bca_payload(),
-            )
-        ]
-    )
-    creds = BcaCredentials(api_key="bca-key")
-    cache = SourceCache()
-    client = BcaSourceClient(
-        creds, transport, options=SourceClientOptions(cache=cache)
-    )
-
-    # Reading the same lot twice hits cache
-    record_1 = client.read_lot("YF66 FEJ")
-    record_2 = client.read_lot("YF66 FEJ")
-    assert record_1 == record_2
-    assert len(transport.sent_requests) == 1
-
-    # Batch read with duplicates only fetches once
-    records = client.read_lots(["YF66 FEJ", "YF66 FEJ", "  ", "YF66 FEJ"])
-    assert len(records) == 1
-    assert len(transport.sent_requests) == 1
-
-
-def test_bca_source_client_hard_stops_on_authentication_challenge() -> None:
-    transport = FakeHttpTransport(
-        [
-            HttpResponse(
-                status_code=401,
-                headers={"WWW-Authenticate": "Bearer"},
-                body='{"error": "Unauthorized"}',
-            )
-        ]
-    )
-    creds = BcaCredentials(api_key="expired-key")
-    client = BcaSourceClient(creds, transport)
-
-    with pytest.raises(AuthenticationChallengeError, match="401"):
-        client.read_lot("YF66 FEJ")
-
-
-def test_bca_source_client_hard_stops_on_bot_challenge() -> None:
-    transport = FakeHttpTransport(
-        [
-            HttpResponse(
-                status_code=403,
-                headers={"cf-mitigated": "challenge"},
-                body="<html><title>Attention Required! | Cloudflare</title></html>",
-            )
-        ]
-    )
-    creds = BcaCredentials(api_key="valid-key")
-    client = BcaSourceClient(creds, transport)
-
-    with pytest.raises(BotChallengeDetectedError, match="Anti-bot"):
-        client.read_lot("YF66 FEJ")
-
-
-def test_bca_source_client_retries_transient_throttling_and_halts_on_repeated() -> None:
-    # 1. Transient 429 then success
-    transport_success = FakeHttpTransport(
-        [
-            HttpResponse(
-                status_code=429,
-                headers={"Retry-After": "1"},
-                body="Too Many Requests",
-            ),
-            HttpResponse(
-                status_code=200,
-                headers={},
-                body=sample_bca_payload(),
-            ),
-        ]
-    )
-    creds = BcaCredentials(api_key="valid-key")
-    client_success = BcaSourceClient(creds, transport_success)
-    record = client_success.read_lot("YF66 FEJ")
-    assert record is not None
-    assert len(transport_success.sent_requests) == 2
-
-    # 2. Repeated 429 exceeding max retries -> RepeatedThrottlingError
-    transport_throttled = FakeHttpTransport(
-        [
-            HttpResponse(status_code=429, headers={}, body="Too Many Requests"),
-            HttpResponse(status_code=429, headers={}, body="Too Many Requests"),
-            HttpResponse(status_code=429, headers={}, body="Too Many Requests"),
-            HttpResponse(status_code=429, headers={}, body="Too Many Requests"),
-        ]
-    )
-    client_throttled = BcaSourceClient(
-        creds,
-        transport_throttled,
-        options=SourceClientOptions(backoff_policy=BackoffPolicy(max_retries=2)),
-    )
-    with pytest.raises(RepeatedThrottlingError, match="Repeated throttling"):
-        client_throttled.read_lot("YF66 FEJ")
 
 
 def test_autotrader_source_client_demonstrates_minimal_authenticated_read() -> None:
@@ -375,6 +204,19 @@ def test_parse_retry_after_and_backoff_calculations() -> None:
     assert policy.delay_for_attempt(0, retry_after=15.0) == 15.0
 
 
+def test_detect_challenge_markers_reports_descriptive_reason() -> None:
+    assert (
+        detect_challenge_markers(
+            "<html><title>Attention Required! | Cloudflare</title></html>"
+        )
+        is not None
+    )
+    assert (
+        detect_challenge_markers("<html><body>normal search results</body></html>")
+        is None
+    )
+
+
 def test_bot_challenge_detector_markers() -> None:
     assert detect_bot_challenge(
         HttpResponse(status_code=200, headers={"cf-mitigated": "1"}, body="")
@@ -391,23 +233,37 @@ def test_bot_challenge_detector_markers() -> None:
     )
 
 
+def sample_bca_live_card_html() -> str:
+    return """
+    <!DOCTYPE html>
+    <html>
+    <body>
+        <div class="VehicleResultCardDesktop">
+            <a data-testid="card-link-desktop" href="https://www.bca.co.uk/lot/YF66%20FEJ?q=test"></a>
+            <a class="VehicleResultCardDesktop__StyledLink-sc-123" href="https://www.bca.co.uk/lot/YF66%20FEJ">BMW 320d M Sport Saloon</a>
+            <ul>
+                <li><p color="grey-blue">130,319 miles (Warranted)</p></li>
+                <li><p color="grey-blue">2016 (16 reg)</p></li>
+                <li><p color="grey-blue">Diesel</p></li>
+                <li><p color="grey-blue">Automatic</p></li>
+                <li><p color="grey-blue">4 doors</p></li>
+            </ul>
+            <div data-testid="condition-report-icon">BCA Assured</div>
+            <div>
+                <p>CAP Clean</p>
+                <p>£5,450</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
 def test_end_to_end_source_acquisition_pipeline_with_opportunity_search() -> None:
-    # 1. Read authenticated BCA lot
-    bca_transport = FakeHttpTransport(
-        [
-            HttpResponse(
-                status_code=200,
-                headers={"Content-Type": "application/json"},
-                body=sample_bca_payload(),
-            )
-        ]
-    )
-    bca_client = BcaSourceClient(
-        BcaCredentials(api_key="bca-key"),
-        bca_transport,
-    )
-    bca_record = bca_client.read_lot("YF66 FEJ")
-    assert bca_record is not None
+    # 1. BCA acquisition through the user-assisted capture/import route
+    auction_lots = ManualBcaImporter().import_from_html(sample_bca_live_card_html())
+    assert len(auction_lots) == 1
+    assert auction_lots[0].id == AuctionLotId("YF66 FEJ")
 
     # 2. Read authenticated Auto Trader listing
     at_transport = FakeHttpTransport(
@@ -426,11 +282,7 @@ def test_end_to_end_source_acquisition_pipeline_with_opportunity_search() -> Non
     at_record = at_client.read_listing("202603271072975")
     assert at_record is not None
 
-    # 3. Parse into domain entities through acquisition seam
-    auction_lots = BcaAcquisition().acquire([bca_record])
-    assert len(auction_lots) == 1
-    assert auction_lots[0].id == AuctionLotId("YF66 FEJ")
-
+    # 3. Parse Auto Trader into domain entities through the acquisition seam
     market_snapshot = AutoTraderAcquisition().acquire_snapshot([at_record])
     assert len(market_snapshot.listings) == 1
     assert market_snapshot.listings[0].id == AutoTraderListingId("202603271072975")

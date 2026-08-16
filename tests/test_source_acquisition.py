@@ -340,6 +340,7 @@ def sample_bca_live_card_html() -> str:
                 <li><p color="grey-blue">Auto Clutch</p></li>
                 <li><p color="grey-blue">5 doors</p></li>
             </ul>
+            <div data-testid="condition-report-icon">BCA Assured</div>
             <div>
                 <p>CAP Clean</p>
                 <p>£7,800</p>
@@ -416,7 +417,9 @@ def test_manual_autotrader_importer_parses_json_and_records(tmp_path: Path) -> N
 
     snapshot_from_records = importer.import_from_records([record])
     assert len(snapshot_from_records.listings) == 1
-    assert snapshot_from_records.listings[0].id == AutoTraderListingId("202603271072975")
+    assert snapshot_from_records.listings[0].id == AutoTraderListingId(
+        "202603271072975"
+    )
 
     json_payload = json.dumps([record])
     snapshot_from_json = importer.import_from_json(json_payload)
