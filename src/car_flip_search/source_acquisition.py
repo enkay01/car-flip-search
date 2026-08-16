@@ -341,7 +341,7 @@ def _extract_bca_cards_from_html(html_content: str) -> list[BcaRawRecord]:
             if d_match and doors is None:
                 doors = int(d_match.group(1))
 
-        cap_match = re.search(r"CAP Clean</p><p[^>]*>£([\d,]+)</p>", chunk)
+        cap_match = re.search(r"CAP Clean</p>\s*<p[^>]*>£([\d,]+)</p>", chunk)
         if not cap_match:
             continue
         cap_clean = int(cap_match.group(1).replace(",", ""))
@@ -394,8 +394,13 @@ def _extract_bca_records_from_json_string(script_json: str) -> list[BcaRawRecord
 
     records: list[BcaRawRecord] = []
     queue = [data]
-    while queue:
+    visited = 0
+    max_nodes = 5000
+
+    while queue and visited < max_nodes:
         current = queue.pop(0)
+        visited += 1
+
         with contextlib.suppress(KeyError, TypeError, ValueError):
             ident_raw = current["identity"]
             identity: BcaRawIdentity = {
@@ -422,11 +427,15 @@ def _extract_bca_records_from_json_string(script_json: str) -> list[BcaRawRecord
             records.append(record)
             continue
 
-        with contextlib.suppress(AttributeError, TypeError):
-            queue.extend(current)
-        with contextlib.suppress(AttributeError, TypeError):
-            for key in current:
-                with contextlib.suppress(TypeError, KeyError, IndexError):
-                    queue.append(current[key])
+        if hasattr(current, "values"):
+            with contextlib.suppress(AttributeError, TypeError):
+                for val in current.values():
+                    if hasattr(val, "values") or (hasattr(val, "__iter__") and not hasattr(val, "lower")):
+                        queue.append(val)
+        elif hasattr(current, "__iter__") and not hasattr(current, "lower"):
+            with contextlib.suppress(AttributeError, TypeError):
+                for elem in current:
+                    if hasattr(elem, "values") or (hasattr(elem, "__iter__") and not hasattr(elem, "lower")):
+                        queue.append(elem)
 
     return records
