@@ -386,7 +386,31 @@ def test_manual_bca_importer_parses_dom_html_and_json_scripts(tmp_path: Path) ->
     assert importer.import_from_html_file(str(tmp_path / "missing.html")) == ()
 
 
-def test_manual_autotrader_importer_parses_json_and_records() -> None:
+def sample_autotrader_live_card_html() -> str:
+    return """
+    <!DOCTYPE html>
+    <html>
+    <body>
+        <div data-testid="search-listing">
+            <a href="https://www.autotrader.co.uk/car-details/202603271072975">
+                <h3 data-testid="search-listing-title">BMW 320d M Sport Saloon</h3>
+            </a>
+            <p>£8,995</p>
+            <ul>
+                <li>117,004 miles</li>
+                <li>2016 (16 reg)</li>
+                <li>Diesel</li>
+                <li>Automatic</li>
+                <li>4 doors</li>
+                <li>Trade seller</li>
+            </ul>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def test_manual_autotrader_importer_parses_json_and_records(tmp_path: Path) -> None:
     importer = ManualAutoTraderImporter()
     record = make_autotrader_record()
 
@@ -401,3 +425,20 @@ def test_manual_autotrader_importer_parses_json_and_records() -> None:
 
     assert importer.import_from_json("invalid json").listings == ()
     assert importer.import_from_json('{"not": "a list"}').listings == ()
+
+    # HTML string import
+    snapshot_from_html = importer.import_from_html(sample_autotrader_live_card_html())
+    assert len(snapshot_from_html.listings) == 1
+    assert snapshot_from_html.listings[0].id == AutoTraderListingId("202603271072975")
+    assert snapshot_from_html.listings[0].cash_price == CashPrice(8_995)
+    assert snapshot_from_html.listings[0].seller_type == SellerType.DEALER
+
+    # HTML file import
+    file_path = tmp_path / "autotrader_page.html"
+    file_path.write_text(sample_autotrader_live_card_html(), encoding="utf-8")
+    snapshot_from_file = importer.import_from_html_file(str(file_path))
+    assert len(snapshot_from_file.listings) == 1
+    assert snapshot_from_file.listings[0].id == AutoTraderListingId("202603271072975")
+
+    # Missing file returns empty snapshot
+    assert importer.import_from_html_file(str(tmp_path / "missing.html")).listings == ()

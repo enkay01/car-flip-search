@@ -154,6 +154,18 @@ class ManualAutoTraderImporter:
         except (json.JSONDecodeError, TypeError, ValueError):
             return MarketSnapshot(())
 
+    def import_from_html(self, html_content: str) -> MarketSnapshot:
+        records = _parse_autotrader_html(html_content)
+        return self._acquisition.acquire_snapshot(records)
+
+    def import_from_html_file(self, file_path: str) -> MarketSnapshot:
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                content = f.read()
+            return self.import_from_html(content)
+        except (OSError, UnicodeDecodeError):
+            return MarketSnapshot(())
+
 
 def _parse_bca_record(record: BcaRawRecord) -> AuctionLot | None:
     try:
@@ -455,6 +467,269 @@ def _extract_bca_records_from_json_string(script_json: str) -> list[BcaRawRecord
             with contextlib.suppress(AttributeError, TypeError):
                 for elem in current:
                     if hasattr(elem, "values") or (hasattr(elem, "__iter__") and not hasattr(elem, "lower")):
+                        queue.append(elem)
+
+    return records
+
+
+class _AutoTraderCardSpecs(TypedDict):
+    mileage: int
+    year: int
+    fuel: str
+    transmission: str
+    doors: int
+    cash_price: int
+    seller_type: str
+
+
+class _AutoTraderHtmlTagParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.script_json_blocks: list[str] = []
+        self._in_json_script = False
+        self._current_script: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_dict: dict[str, str] = {}
+        for key, val in attrs:
+            if val is not None:
+                attr_dict[key.lower()] = val
+
+        if tag.lower() == "script":
+            script_type = attr_dict.get("type", "").lower()
+            if "json" in script_type:
+                self._in_json_script = True
+                self._current_script = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "script" and self._in_json_script:
+            self._in_json_script = False
+            self.script_json_blocks.append("".join(self._current_script))
+            self._current_script = []
+
+    def handle_data(self, data: str) -> None:
+        if self._in_json_script:
+            self._current_script.append(data)
+
+
+def _parse_autotrader_html(html_content: str) -> tuple[AutoTraderRawRecord, ...]:
+    parser = _AutoTraderHtmlTagParser()
+    with contextlib.suppress(TypeError, ValueError, AssertionError):
+        parser.feed(html_content)
+
+    all_records: list[AutoTraderRawRecord] = []
+    for script_json in parser.script_json_blocks:
+        extracted = _extract_autotrader_records_from_json_string(script_json)
+        all_records.extend(extracted)
+
+    dom_cards = _extract_autotrader_cards_from_html(html_content)
+    all_records.extend(dom_cards)
+
+    return tuple(all_records)
+
+
+def _extract_autotrader_cards_from_html(
+    html_content: str,
+) -> list[AutoTraderRawRecord]:
+    card_splits = re.split(
+        r'(?:data-testid=["\']search-listing["\']|class=["\'][^"\']*search-page__result[^"\']*["\'])',
+        html_content,
+    )
+    if len(card_splits) <= 1:
+        card_splits = re.split(r'href=["\'][^"\']*/car-details/', html_content)
+        if len(card_splits) <= 1:
+            return []
+
+    records: list[AutoTraderRawRecord] = []
+    for chunk in card_splits[1:]:
+        card = _parse_single_autotrader_card(chunk)
+        if card is not None:
+            records.append(card)
+
+    return records
+
+
+def _parse_single_autotrader_card(chunk: str) -> AutoTraderRawRecord | None:
+    try:
+        id_match = re.search(
+            r'(?:/car-details/|data-advert-id=["\']|id=["\']listing-)(\d+)', chunk
+        )
+        if not id_match:
+            return None
+        advert_id = id_match.group(1).strip()
+
+        title_match = re.search(
+            r'(?:data-testid=["\']search-listing-title["\'][^>]*>|class=["\'][^"\']*listing-title[^"\']*["\'][^>]*>|<h3[^>]*>)([^<]+)',
+            chunk,
+        )
+        if not title_match:
+            return None
+        title = title_match.group(1).strip()
+
+        items = re.findall(
+            r"<li[^>]*>([^<]+)</li>|<p[^>]*>([^<]+)</p>|<span>([^<]+)</span>",
+            chunk,
+        )
+        flat_items: list[str] = []
+        for t in items:
+            for piece in t:
+                if piece:
+                    flat_items.append(piece.strip())
+
+        specs = _extract_autotrader_card_specs(flat_items, chunk)
+        if specs is None:
+            return None
+
+        parts = title.split()
+        make = parts[0]
+        model_variant = parts[1] if len(parts) > 1 else ""
+        body_style = parts[-1] if len(parts) > 2 else "Hatchback"
+        trim = " ".join(parts[2:-1]) if len(parts) > 3 else None
+
+        identity: AutoTraderRawIdentity = {
+            "make": make,
+            "model_variant": model_variant,
+            "registration_year": specs["year"],
+            "fuel_type": specs["fuel"],
+            "transmission": specs["transmission"],
+            "body_style": body_style,
+            "door_count": specs["doors"],
+        }
+        record: AutoTraderRawRecord = {
+            "id": advert_id,
+            "identity": identity,
+            "mileage": specs["mileage"],
+            "cash_price": specs["cash_price"],
+            "seller_type": specs["seller_type"],
+        }
+        if trim:
+            record["trim"] = trim
+        return record
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def _extract_autotrader_card_specs(
+    items: list[str], chunk: str
+) -> _AutoTraderCardSpecs | None:
+    extracted: dict[str, str | int] = {}
+
+    price_match = re.search(r"£([\d,]+)", chunk)
+    if price_match:
+        extracted["cash_price"] = int(price_match.group(1).replace(",", ""))
+
+    lower_chunk = chunk.lower()
+    if "private" in lower_chunk and "dealer" not in lower_chunk:
+        extracted["seller_type"] = "private"
+    else:
+        extracted["seller_type"] = "dealer"
+
+    for item in items:
+        m_match = re.search(r"([\d,]+)\s*miles", item, re.IGNORECASE)
+        if m_match and "mileage" not in extracted:
+            extracted["mileage"] = int(m_match.group(1).replace(",", ""))
+        y_match = re.search(r"\b(19\d\d|20\d\d)\b", item)
+        if (
+            y_match
+            and "year" not in extracted
+            and ("reg" in item.lower() or len(item) <= 6)
+        ):
+            extracted["year"] = int(y_match.group(1))
+        item_lower = item.lower()
+        if item_lower in (
+            "petrol",
+            "diesel",
+            "electric",
+            "hybrid",
+            "petrol plug-in hybrid",
+            "diesel plug-in hybrid",
+        ):
+            extracted["fuel"] = item
+        if item_lower in (
+            "manual",
+            "automatic",
+            "auto clutch",
+            "auto/manual mode",
+            "cvt",
+            "cvt/manual mode",
+        ):
+            extracted["transmission"] = item
+        d_match = re.search(r"(\d+)\s*doors", item, re.IGNORECASE)
+        if d_match and "doors" not in extracted:
+            extracted["doors"] = int(d_match.group(1))
+
+    try:
+        return _AutoTraderCardSpecs(
+            mileage=int(extracted["mileage"]),
+            year=int(extracted["year"]),
+            fuel=str(extracted["fuel"]),
+            transmission=str(extracted["transmission"]),
+            doors=int(extracted["doors"]),
+            cash_price=int(extracted["cash_price"]),
+            seller_type=str(extracted["seller_type"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _extract_autotrader_records_from_json_string(
+    script_json: str,
+) -> list[AutoTraderRawRecord]:
+    try:
+        data = json.loads(script_json)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+
+    records: list[AutoTraderRawRecord] = []
+    queue = [data]
+    visited = 0
+    max_nodes = 5000
+
+    while queue and visited < max_nodes:
+        current = queue.pop(0)
+        visited += 1
+
+        with contextlib.suppress(KeyError, TypeError, ValueError):
+            ident_raw = current["identity"]
+            identity: AutoTraderRawIdentity = {
+                "make": str(ident_raw["make"]),
+                "model_variant": str(ident_raw["model_variant"]),
+                "registration_year": int(ident_raw["registration_year"]),
+                "fuel_type": str(ident_raw["fuel_type"]),
+                "transmission": str(ident_raw["transmission"]),
+                "body_style": str(ident_raw["body_style"]),
+                "door_count": int(ident_raw["door_count"]),
+            }
+            raw_seller = str(current["seller_type"])
+            if raw_seller in ("private", "dealer"):
+                record: AutoTraderRawRecord = {
+                    "id": str(current["id"]),
+                    "identity": identity,
+                    "mileage": int(current["mileage"]),
+                    "cash_price": int(current["cash_price"]),
+                    "seller_type": raw_seller,
+                }
+                trim_val = (
+                    current.get("trim") if hasattr(current, "get") else None
+                )
+                if trim_val is not None:
+                    record["trim"] = str(trim_val)
+                records.append(record)
+                continue
+
+        if hasattr(current, "values"):
+            with contextlib.suppress(AttributeError, TypeError):
+                for val in current.values():
+                    if hasattr(val, "values") or (
+                        hasattr(val, "__iter__") and not hasattr(val, "lower")
+                    ):
+                        queue.append(val)
+        elif hasattr(current, "__iter__") and not hasattr(current, "lower"):
+            with contextlib.suppress(AttributeError, TypeError):
+                for elem in current:
+                    if hasattr(elem, "values") or (
+                        hasattr(elem, "__iter__") and not hasattr(elem, "lower")
+                    ):
                         queue.append(elem)
 
     return records
