@@ -2,13 +2,13 @@
 
 Enforces safe user-controlled access:
 - Headed browser workflow with human-in-the-loop session navigation.
-- Conservative cadence (max 1 page per minute / 60-second interval).
-- Bounded scope (max 5 pages per run).
+- Handles Auto Trader's infinite scroll architecture by triggering progressive scroll events.
+- Conservative cadence (configurable interval, default 60.0s / max 1 batch per min).
+- Bounded scope (max 5 batches per run).
 - DOM saving to local files and local parsing via ManualAutoTraderImporter.
 - Immediate hard stop if bot/CAPTCHA challenges appear.
 """
 
-import contextlib
 import sys
 import time
 from argparse import ArgumentParser
@@ -72,7 +72,7 @@ def _countdown_pacing(seconds: float) -> None:
     """Show a real-time countdown in the terminal during cadence delay."""
     remaining = int(seconds)
     print(
-        f"Pacing cadence: {remaining}s remaining before next page...",
+        f"Pacing cadence: {remaining}s remaining before next scroll batch...",
         end="",
         flush=True,
     )
@@ -91,9 +91,6 @@ def run_headed_fetch(options: FetchOptions) -> int:
 
     try:
         from playwright.sync_api import (
-            Error as PlaywrightError,
-        )
-        from playwright.sync_api import (
             sync_playwright,
         )
     except ImportError:
@@ -108,11 +105,11 @@ def run_headed_fetch(options: FetchOptions) -> int:
     total_acquired = 0
 
     print("=" * 70)
-    print("Auto Trader Headed Browser Capture Tool")
+    print("Auto Trader Headed Browser Capture Tool (Infinite Scroll)")
     print(f"Output directory : {options.output_dir}")
-    print(f"Max pages        : {options.max_pages}")
+    print(f"Max scroll batches: {options.max_pages}")
     print(
-        f"Interval         : {options.interval_seconds}s (cadence: max 1 page/min)"
+        f"Interval         : {options.interval_seconds}s (cadence: max 1 batch/min)"
     )
     print("=" * 70)
 
@@ -141,17 +138,17 @@ def run_headed_fetch(options: FetchOptions) -> int:
             browser.close()
             return 0
 
-        current_page = 1
-        while current_page <= options.max_pages:
+        current_batch = 1
+        while current_batch <= options.max_pages:
             print(
-                f"\n==================== Capturing Page {current_page} of {options.max_pages} ===================="
+                f"\n==================== Capturing Batch {current_batch} of {options.max_pages} ===================="
             )
 
-            # Scroll down to trigger lazy-loaded listings
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-            page.wait_for_timeout(500)
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1000)
+            # Auto Trader uses infinite scroll: trigger smooth progressive scroll down
+            print("Triggering scroll to load additional listings...")
+            for _ in range(3):
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(1200)
 
             html_content = page.content()
 
@@ -165,7 +162,7 @@ def run_headed_fetch(options: FetchOptions) -> int:
                 break
 
             output_file = (
-                options.output_dir / f"autotrader_page_{current_page}.html"
+                options.output_dir / f"autotrader_page_{current_batch}.html"
             )
             output_file.write_text(html_content, encoding="utf-8")
             print(f"Saved DOM ({len(html_content):,} bytes) to: {output_file}")
@@ -173,13 +170,13 @@ def run_headed_fetch(options: FetchOptions) -> int:
             if options.parse_on_save:
                 snapshot = importer.import_from_html(html_content)
                 print(
-                    f"Parsed {len(snapshot.listings)} valid listings with Cash Prices from page {current_page}."
+                    f"Parsed {len(snapshot.listings)} cumulative valid listings with Cash Prices."
                 )
-                total_acquired += len(snapshot.listings)
+                total_acquired = len(snapshot.listings)
 
-            if current_page >= options.max_pages:
+            if current_batch >= options.max_pages:
                 print(
-                    f"\nReached maximum page limit ({options.max_pages}). Capture session complete."
+                    f"\nReached maximum scroll batch limit ({options.max_pages}). Capture session complete."
                 )
                 break
 
@@ -187,49 +184,7 @@ def run_headed_fetch(options: FetchOptions) -> int:
             print()
             _countdown_pacing(options.interval_seconds)
 
-            # Scroll down to ensure bottom pagination controls are visible
-            print(f"Looking for next page button (Page {current_page + 1})...")
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1000)
-
-            next_selectors = [
-                "a[data-testid='pagination-next']",
-                "a[aria-label*='Next' i]",
-                "button[aria-label*='Next' i]",
-                "a:has-text('Next')",
-                "button:has-text('Next')",
-                f"a[data-page='{current_page + 1}']",
-                "a[rel='next']",
-            ]
-
-            clicked = False
-            for selector in next_selectors:
-                with contextlib.suppress(
-                    PlaywrightError, TimeoutError, RuntimeError, ValueError
-                ):
-                    btn = page.locator(selector)
-                    if btn.count() > 0 and btn.first.is_visible():
-                        print(f"Clicking next page using '{selector}'...")
-                        btn.first.click(timeout=5000)
-                        page.wait_for_timeout(3000)
-                        clicked = True
-                        break
-
-            if not clicked:
-                print(
-                    f"\nCould not automatically click the next button for page {current_page + 1}."
-                )
-                try:
-                    user_input = input(
-                        f"Please click 'next' in the browser to view page {current_page + 1}, then press ENTER here (or type 'q' to stop): "
-                    )
-                    if user_input.strip().lower() == "q":
-                        print("User chose to end capture.")
-                        break
-                except (EOFError, KeyboardInterrupt):
-                    break
-
-            current_page += 1
+            current_batch += 1
 
         browser.close()
 
@@ -237,7 +192,7 @@ def run_headed_fetch(options: FetchOptions) -> int:
         "\n======================================================================"
     )
     print(
-        f"Capture session completed successfully! Total listings acquired: {total_acquired}"
+        f"Capture session completed successfully! Total unique listings acquired: {total_acquired}"
     )
     print(
         "======================================================================"
@@ -259,13 +214,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--max-pages",
         type=int,
         default=5,
-        help="Maximum number of search pages to capture (default: 5)",
+        help="Maximum number of scroll batches to capture (default: 5)",
     )
     parser.add_argument(
         "--interval",
         type=float,
         default=60.0,
-        help="Delay in seconds between page navigations (default: 60.0s / 1 page per min)",
+        help="Delay in seconds between scroll batches (default: 60.0s / 1 batch per min)",
     )
     parser.add_argument(
         "--dry-run",

@@ -480,6 +480,7 @@ class _AutoTraderCardSpecs(TypedDict):
     doors: int
     cash_price: int
     seller_type: str
+    body_style: str
 
 
 class _AutoTraderHtmlTagParser(HTMLParser):
@@ -532,18 +533,23 @@ def _extract_autotrader_cards_from_html(
     html_content: str,
 ) -> list[AutoTraderRawRecord]:
     card_splits = re.split(
-        r'(?:data-testid=["\']search-listing["\']|class=["\'][^"\']*search-page__result[^"\']*["\'])',
-        html_content,
+        r'<li [^>]*data-advertid=[\"\']\d+[\"\']', html_content
     )
     if len(card_splits) <= 1:
+        card_splits = re.split(
+            r'data-testid=["\']search-listing["\']', html_content
+        )
+    if len(card_splits) <= 1:
         card_splits = re.split(r'href=["\'][^"\']*/car-details/', html_content)
-        if len(card_splits) <= 1:
-            return []
+    if len(card_splits) <= 1:
+        return []
 
     records: list[AutoTraderRawRecord] = []
+    seen_ids: set[str] = set()
     for chunk in card_splits[1:]:
         card = _parse_single_autotrader_card(chunk)
-        if card is not None:
+        if card is not None and card["id"] not in seen_ids:
+            seen_ids.add(card["id"])
             records.append(card)
 
     return records
@@ -552,39 +558,33 @@ def _extract_autotrader_cards_from_html(
 def _parse_single_autotrader_card(chunk: str) -> AutoTraderRawRecord | None:
     try:
         id_match = re.search(
-            r'(?:/car-details/|data-advert-id=["\']|id=["\']listing-)(\d+)', chunk
+            r'(?:id=[\"\']|data-advertid=[\"\']|/car-details/)(\d{10,})', chunk
         )
         if not id_match:
             return None
         advert_id = id_match.group(1).strip()
 
         title_match = re.search(
-            r'(?:data-testid=["\']search-listing-title["\'][^>]*>|class=["\'][^"\']*listing-title[^"\']*["\'][^>]*>|<h3[^>]*>)([^<]+)',
-            chunk,
+            r'data-testid=[\"\']search-listing-title[\"\'][^>]*>([^<]+)', chunk
+        ) or re.search(
+            r'<h3[^>]*>([^<]+)', chunk
         )
         if not title_match:
             return None
         title = title_match.group(1).strip()
 
-        items = re.findall(
-            r"<li[^>]*>([^<]+)</li>|<p[^>]*>([^<]+)</p>|<span>([^<]+)</span>",
-            chunk,
+        sub_match = re.search(
+            r'data-testid=[\"\']search-listing-subtitle[\"\'][^>]*>([^<]+)', chunk
         )
-        flat_items: list[str] = []
-        for t in items:
-            for piece in t:
-                if piece:
-                    flat_items.append(piece.strip())
+        subtitle = sub_match.group(1).strip() if sub_match else ""
 
-        specs = _extract_autotrader_card_specs(flat_items, chunk)
+        specs = _extract_autotrader_card_specs(chunk, title, subtitle)
         if specs is None:
             return None
 
         parts = title.split()
         make = parts[0]
         model_variant = parts[1] if len(parts) > 1 else ""
-        body_style = parts[-1] if len(parts) > 2 else "Hatchback"
-        trim = " ".join(parts[2:-1]) if len(parts) > 3 else None
 
         identity: AutoTraderRawIdentity = {
             "make": make,
@@ -592,7 +592,7 @@ def _parse_single_autotrader_card(chunk: str) -> AutoTraderRawRecord | None:
             "registration_year": specs["year"],
             "fuel_type": specs["fuel"],
             "transmission": specs["transmission"],
-            "body_style": body_style,
+            "body_style": specs["body_style"],
             "door_count": specs["doors"],
         }
         record: AutoTraderRawRecord = {
@@ -602,71 +602,86 @@ def _parse_single_autotrader_card(chunk: str) -> AutoTraderRawRecord | None:
             "cash_price": specs["cash_price"],
             "seller_type": specs["seller_type"],
         }
-        if trim:
-            record["trim"] = trim
+        if subtitle:
+            record["trim"] = subtitle
         return record
     except (KeyError, TypeError, ValueError, IndexError):
         return None
 
 
 def _extract_autotrader_card_specs(
-    items: list[str], chunk: str
+    chunk: str, title: str, subtitle: str
 ) -> _AutoTraderCardSpecs | None:
-    extracted: dict[str, str | int] = {}
-
-    price_match = re.search(r"£([\d,]+)", chunk)
-    if price_match:
-        extracted["cash_price"] = int(price_match.group(1).replace(",", ""))
-
-    lower_chunk = chunk.lower()
-    if "private" in lower_chunk and "dealer" not in lower_chunk:
-        extracted["seller_type"] = "private"
-    else:
-        extracted["seller_type"] = "dealer"
-
-    for item in items:
-        m_match = re.search(r"([\d,]+)\s*miles", item, re.IGNORECASE)
-        if m_match and "mileage" not in extracted:
-            extracted["mileage"] = int(m_match.group(1).replace(",", ""))
-        y_match = re.search(r"\b(19\d\d|20\d\d)\b", item)
-        if (
-            y_match
-            and "year" not in extracted
-            and ("reg" in item.lower() or len(item) <= 6)
-        ):
-            extracted["year"] = int(y_match.group(1))
-        item_lower = item.lower()
-        if item_lower in (
-            "petrol",
-            "diesel",
-            "electric",
-            "hybrid",
-            "petrol plug-in hybrid",
-            "diesel plug-in hybrid",
-        ):
-            extracted["fuel"] = item
-        if item_lower in (
-            "manual",
-            "automatic",
-            "auto clutch",
-            "auto/manual mode",
-            "cvt",
-            "cvt/manual mode",
-        ):
-            extracted["transmission"] = item
-        d_match = re.search(r"(\d+)\s*doors", item, re.IGNORECASE)
-        if d_match and "doors" not in extracted:
-            extracted["doors"] = int(d_match.group(1))
-
     try:
+        price_match = re.search(r"£([\d,]+)", chunk)
+        if not price_match:
+            return None
+        cash_price = int(price_match.group(1).replace(",", ""))
+
+        mileage_match = re.search(
+            r'data-testid=[\"\']mileage[\"\'][^>]*>([\d,]+)\s*miles', chunk
+        ) or re.search(r"([\d,]+)\s*miles", chunk)
+        if not mileage_match:
+            return None
+        mileage = int(mileage_match.group(1).replace(",", ""))
+
+        year_match = re.search(
+            r'data-testid=[\"\']registered_year[\"\'][^>]*>.*?\b(19\d\d|20\d\d)\b',
+            chunk,
+        ) or re.search(r"\b(19\d\d|20\d\d)\b", chunk)
+        if not year_match:
+            return None
+        year = int(year_match.group(1))
+
+        full_text = f"{title} {subtitle} {chunk}"
+
+        dr_match = re.search(r"(\d+)\s*(?:dr|doors)", full_text, re.IGNORECASE)
+        doors = int(dr_match.group(1)) if dr_match else 5
+
+        if re.search(r"\b(diesel|tdi)\b", full_text, re.IGNORECASE):
+            fuel = "Diesel"
+        elif re.search(
+            r"\b(hybrid|etsi|mhev|phev|gte|plug-in)\b", full_text, re.IGNORECASE
+        ):
+            fuel = "Hybrid"
+        elif re.search(r"\b(electric|ev)\b", full_text, re.IGNORECASE):
+            fuel = "Electric"
+        else:
+            fuel = "Petrol"
+
+        if re.search(r"\b(manual)\b", full_text, re.IGNORECASE):
+            transmission = "Manual"
+        else:
+            transmission = "Automatic"
+
+        if re.search(r"\b(estate|touring|avant|sw)\b", full_text, re.IGNORECASE):
+            body_style = "Estate"
+        elif re.search(r"\b(saloon|sedan)\b", full_text, re.IGNORECASE):
+            body_style = "Saloon"
+        elif re.search(r"\b(suv|crossover|4x4)\b", full_text, re.IGNORECASE):
+            body_style = "SUV"
+        elif re.search(r"\b(coupe)\b", full_text, re.IGNORECASE):
+            body_style = "Coupe"
+        elif re.search(
+            r"\b(convertible|cabriolet)\b", full_text, re.IGNORECASE
+        ):
+            body_style = "Convertible"
+        else:
+            body_style = "Hatchback"
+
+        seller_type = (
+            "private" if "private seller" in chunk.lower() else "dealer"
+        )
+
         return _AutoTraderCardSpecs(
-            mileage=int(extracted["mileage"]),
-            year=int(extracted["year"]),
-            fuel=str(extracted["fuel"]),
-            transmission=str(extracted["transmission"]),
-            doors=int(extracted["doors"]),
-            cash_price=int(extracted["cash_price"]),
-            seller_type=str(extracted["seller_type"]),
+            mileage=mileage,
+            year=year,
+            fuel=fuel,
+            transmission=transmission,
+            doors=doors,
+            cash_price=cash_price,
+            seller_type=seller_type,
+            body_style=body_style,
         )
     except (KeyError, TypeError, ValueError):
         return None
