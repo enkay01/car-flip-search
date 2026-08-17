@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import TypedDict
+from urllib.parse import unquote
 
 from .model import (
     AuctionLot,
@@ -331,6 +332,21 @@ _ACCIDENT_DAMAGE_MARKERS = (
     r"accident history",
     r"previous accident",
 )
+_BCA_BODY_STYLE_ALIASES = {
+    "cabriolet": "Cabriolet",
+    "convertible": "Convertible",
+    "coupe": "Coupe",
+    "estate": "Estate",
+    "hatchback": "Hatchback",
+    "mpv": "MPV",
+    "panelvan": "PanelVan",
+    "pickup": "Pick-up",
+    "roadster": "Roadster",
+    "saloon": "Saloon",
+    "stationwagon": "StationWagon",
+    "suv": "SUV",
+    "van": "Van",
+}
 
 
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
@@ -390,8 +406,8 @@ def _observe_bca_card_chunk(chunk: str) -> BcaCardObservation | None:
     if not is_card:
         return None
 
-    lot_match = re.search(r"/lot/([^?\"'/\s]+)", chunk)
-    lot_id = lot_match.group(1).replace("%20", " ").strip() if lot_match else None
+    lot_match = re.search(r"/lot/([^?\"'/]+)", chunk)
+    lot_id = unquote(lot_match.group(1)).strip() if lot_match else None
 
     title_match = re.search(
         r"VehicleResultCardDesktop__StyledLink[^\"]*\"[^>]*>([^<]+)</a>", chunk
@@ -401,14 +417,7 @@ def _observe_bca_card_chunk(chunk: str) -> BcaCardObservation | None:
     cap_match = re.search(r"CAP Clean</p>\s*<p[^>]*>£([\d,]+)</p>", chunk)
     cap_clean_price = int(cap_match.group(1).replace(",", "")) if cap_match else None
 
-    make = model_variant = body_style = trim = None
-    if title:
-        parts = title.split()
-        if parts:
-            make = parts[0]
-            model_variant = parts[1] if len(parts) > 1 else ""
-            body_style = parts[-1] if len(parts) > 2 else ""
-            trim = " ".join(parts[2:-1]) if len(parts) > 3 else None
+    make, model_variant, body_style, trim = _parse_bca_title(title)
 
     items = re.findall(r"<p [^>]*>([^<]+)</p>", chunk)
     fields = _observe_card_spec_fields(items)
@@ -430,6 +439,47 @@ def _observe_bca_card_chunk(chunk: str) -> BcaCardObservation | None:
         accident_damage_reported=_contains_any(chunk, _ACCIDENT_DAMAGE_MARKERS),
         trim=trim,
     )
+
+
+def _parse_bca_title(
+    title: str | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Parse identity only when the title has a known body-style suffix.
+
+    BCA's rendered cards expose the vehicle title as plain text rather than
+    separate identity attributes.  The observed search pages use a one-token
+    make, a model variant, optional trim text, and a final body-style token.
+    An arbitrary final token is not evidence of a body style, so titles without
+    a recognized suffix remain incomplete and are rejected by validation.
+    """
+    if not title:
+        return None, None, None, None
+
+    parts = title.split()
+    if not parts:
+        return None, None, None, None
+
+    make = parts[0]
+    model_variant = parts[1] if len(parts) > 1 else None
+    body_style: str | None = None
+    body_style_start = len(parts)
+
+    for width in (2, 1):
+        if len(parts) < width:
+            continue
+        candidate = " ".join(parts[-width:])
+        key = re.sub(r"[^a-z0-9]", "", candidate.casefold())
+        if key in _BCA_BODY_STYLE_ALIASES:
+            body_style = _BCA_BODY_STYLE_ALIASES[key]
+            body_style_start = len(parts) - width
+            break
+
+    trim = (
+        " ".join(parts[2:body_style_start])
+        if body_style is not None and body_style_start > 2
+        else None
+    )
+    return make, model_variant, body_style, trim
 
 
 def _merge_bca_observations(

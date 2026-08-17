@@ -136,6 +136,8 @@ def run_capture(
             if result.record is not None:
                 cars[result.record["id"]] = result.record
             else:
+                if observation.lot_id is not None:
+                    cars.pop(observation.lot_id.strip(), None)
                 skipped.append(
                     SkippedCar(
                         lot_id=observation.lot_id,

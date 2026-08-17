@@ -204,6 +204,26 @@ def test_observe_bca_cards_merges_responsive_card_variants() -> None:
     assert observation.clean_condition is True
 
 
+def test_observe_bca_cards_preserves_literal_spaces_in_lot_ids() -> None:
+    page = make_page(make_card()).replace("KS18%20ZFM", "KS18 ZFM")
+
+    observations = observe_bca_cards(page)
+
+    assert observations[0].lot_id == "KS18 ZFM"
+
+
+def test_observe_bca_cards_does_not_infer_body_style_from_arbitrary_title_suffix() -> (
+    None
+):
+    card = make_card(CardSpec(title="BMW 320d M Sport"))
+
+    observation = observe_bca_cards(make_page(card))[0]
+
+    assert observation.body_style is None
+    assert observation.trim is None
+    assert "missing body style" in validate_bca_observation(observation).reasons
+
+
 def test_observe_bca_cards_returns_one_observation_per_vehicle() -> None:
     page = make_page(
         make_stub("KS18 ZFM"),
@@ -362,6 +382,21 @@ def test_run_capture_deduplicates_keeping_latest_version() -> None:
     assert len(outcome.cars) == 1
     assert outcome.cars[0]["id"] == "KS18 ZFM"
     assert outcome.cars[0]["cap_clean_price"] == 6_900
+
+
+def test_run_capture_removes_previous_version_when_latest_observation_is_invalid() -> (
+    None
+):
+    options = CaptureOptions(search_name="x", page_limit=5, page_delay_seconds=1)
+    page_1 = make_page(make_card(CardSpec(lot_id="KS18 ZFM")))
+    page_2 = make_page(make_card(CardSpec(lot_id="KS18 ZFM", cap_clean_price=None)))
+    source = FakePageSource([page_1, page_2], advance_results=[True, False])
+
+    outcome = run_capture(options, source, pace=no_pace)
+
+    assert outcome.cars == ()
+    assert len(outcome.skipped) == 1
+    assert outcome.skipped[0].lot_id == "KS18 ZFM"
 
 
 def test_run_capture_halts_on_challenge_and_keeps_cars_so_far() -> None:

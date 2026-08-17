@@ -162,12 +162,18 @@ _CHALLENGE_MARKERS: tuple[tuple[str, str], ...] = (
     ("perimeterx", "a PerimeterX challenge"),
     ("please verify you are a human", "a human-verification prompt"),
     ("access denied - captcha", "a CAPTCHA access-denial page"),
+    ("access denied", "an access-denial page"),
+    ("login required", "a login-required page"),
+    ("please log in", "a login-required page"),
+    ("sign in to continue", "a sign-in page"),
+    ("session expired", "a session-expired page"),
+    ("you have been logged out", "a logged-out page"),
     ("attention required! | cloudflare", "a Cloudflare attention page"),
 )
 
 
 def detect_challenge_markers(html_content: str) -> str | None:
-    """Return a descriptive reason when anti-bot/CAPTCHA markers appear in HTML."""
+    """Return a reason when anti-bot, access-denial, or auth markers appear."""
     lower_content = html_content.lower()
     for marker, description in _CHALLENGE_MARKERS:
         if marker in lower_content:

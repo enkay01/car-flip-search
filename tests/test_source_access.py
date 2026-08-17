@@ -217,6 +217,21 @@ def test_detect_challenge_markers_reports_descriptive_reason() -> None:
     )
 
 
+def test_detect_challenge_markers_reports_auth_and_access_denial_pages() -> None:
+    assert "access-denial" in (
+        detect_challenge_markers("<html><title>Access Denied</title></html>") or ""
+    )
+    assert "sign-in" in (
+        detect_challenge_markers("<html><body>Sign in to continue</body></html>") or ""
+    )
+    assert (
+        detect_challenge_markers(
+            '<script>const loginUrl = "/login";</script><body>search results</body>'
+        )
+        is None
+    )
+
+
 def test_bot_challenge_detector_markers() -> None:
     assert detect_bot_challenge(
         HttpResponse(status_code=200, headers={"cf-mitigated": "1"}, body="")
