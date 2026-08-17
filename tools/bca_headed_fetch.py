@@ -1,8 +1,8 @@
 """User-assisted BCA search capture command.
 
 Opens a visible Playwright browser with a fresh session, lets the user log in
-and run one search, waits for Enter, then captures up to ``page-limit`` pages
-at ``page-delay`` intervals. The capture is saved under
+and run one search, waits for Enter, then captures up to ``result-limit``
+pages at ``move-delay`` intervals. The capture is saved under
 ``data/captures/bca/<capture_id>`` and never overwritten.
 
 The tool never receives, stores, or persists BCA credentials or sessions, and
@@ -20,7 +20,10 @@ from pathlib import Path
 
 from car_flip_search import (
     CaptureChallengeError,
+    CaptureHooks,
     CaptureOptions,
+    SourceKind,
+    bca_capture_strategy,
     print_capture_summary,
     run_capture,
     save_capture,
@@ -128,8 +131,8 @@ def run_capture_command(options: CaptureOptions) -> int:
     print("=" * 70)
     print("BCA capture command")
     print(f"Search name : {options.search_name}")
-    print(f"Page limit  : {options.page_limit}")
-    print(f"Page delay  : {options.page_delay_seconds}s")
+    print(f"Result limit: {options.movement_limit}")
+    print(f"Move delay  : {options.movement_delay_seconds}s")
     print(f"Capture dir : {options.data_dir}")
     print("=" * 70)
 
@@ -154,7 +157,12 @@ def run_capture_command(options: CaptureOptions) -> int:
                 return 1
 
             page_source = _PlaywrightPageSource(page)
-            outcome = run_capture(options, page_source, pace=_countdown_pacing)
+            outcome = run_capture(
+                options,
+                page_source,
+                bca_capture_strategy,
+                hooks=CaptureHooks(pace=_countdown_pacing),
+            )
         finally:
             browser.close()
 
@@ -171,13 +179,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Name for this capture, saved in the manifest",
     )
     parser.add_argument(
-        "--page-limit",
+        "--result-limit",
         type=int,
         default=5,
         help="Maximum number of result pages to capture (default: 5)",
     )
     parser.add_argument(
-        "--page-delay",
+        "--move-delay",
         type=float,
         default=60.0,
         help=(
@@ -195,8 +203,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         options = CaptureOptions(
             search_name=args.search_name,
-            page_limit=args.page_limit,
-            page_delay_seconds=args.page_delay,
+            source=SourceKind.BCA,
+            movement_limit=args.result_limit,
+            movement_delay_seconds=args.move_delay,
             data_dir=args.data_dir,
         )
     except ValueError as error:

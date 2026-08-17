@@ -22,13 +22,33 @@ log in and run one search, then captures the search results for Opportunity
 Search. It never sees or stores your BCA credentials.
 
 ```bash
-uv run python tools/bca_headed_fetch.py --search-name "A-Class Petrol" --page-limit 5 --page-delay 60
+uv run python tools/bca_headed_fetch.py --search-name "A-Class Petrol" --result-limit 5 --move-delay 60
 ```
 
 Each run saves a never-overwritten capture (with the search name and a unique
 capture ID) under `data/captures/bca/<capture_id>/`, keeping the original page
-data, the valid parsed car records, and a skipped-car log. A zero page delay is
-rejected; a capture that stops early is still saved and usable.
+data, the valid parsed car records, and a skipped-car log. A zero movement
+delay is rejected; a capture that stops early is still saved and usable.
+
+## Capturing Auto Trader search results
+
+The Auto Trader capture command opens a visible browser with a fresh session
+and captures one search for Opportunity Search. Auto Trader does not require
+login for this workflow, so no credentials are configured, requested, or
+stored.
+
+```bash
+uv run python tools/autotrader_headed_fetch.py --search-name "A-Class Petrol" --result-limit 5 --move-delay 60
+```
+
+Auto Trader results load by infinite scroll, so the command moves through the
+results in scroll batches up to the configurable result limit (default 5), at
+a configurable non-zero move delay (default 60s), and stops early once two
+consecutive movements produce no new listing IDs. Each run saves a
+never-overwritten capture under `data/captures/autotrader/<capture_id>/` with
+the same layout: original page data, valid parsed records, and a skipped-car
+log. Cars are deduplicated by Auto Trader listing ID, keeping the latest
+version. A capture that stops early is still saved and usable.
 
 ## Development
 

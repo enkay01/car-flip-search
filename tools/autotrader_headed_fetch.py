@@ -1,78 +1,51 @@
-"""Headed browser capture tool for Auto Trader search results pages.
+"""User-assisted Auto Trader search capture command.
 
-Enforces safe user-controlled access:
-- Headed browser workflow with human-in-the-loop session navigation.
-- Handles Auto Trader's infinite scroll architecture by triggering progressive scroll events.
-- Conservative cadence (configurable interval, default 60.0s / max 1 batch per min).
-- Bounded scope (max 5 batches per run).
-- DOM saving to local files and local parsing via ManualAutoTraderImporter.
-- Immediate hard stop if bot/CAPTCHA challenges appear.
+Opens a visible Playwright browser with a fresh session, lets the user run one
+search (Auto Trader does not require login for this workflow), waits for Enter,
+then captures up to ``result-limit`` scroll batches at ``move-delay`` intervals.
+The capture is saved under ``data/captures/autotrader/<capture_id>`` and never
+overwritten.
+
+The tool never requires or stores Auto Trader credentials, and it never
+attempts to bypass a CAPTCHA or access challenge: a challenge stops further
+movement and everything captured so far is still saved. Because Auto Trader
+uses infinite scroll, movement stops early once two consecutive scroll batches
+produce no new listing IDs.
 """
+
+from __future__ import annotations
 
 import sys
 import time
 from argparse import ArgumentParser
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
-from car_flip_search import ManualAutoTraderImporter
+from car_flip_search import (
+    CaptureChallengeError,
+    CaptureHooks,
+    CaptureOptions,
+    SourceKind,
+    autotrader_capture_strategy,
+    print_capture_summary,
+    run_capture,
+    save_capture,
+)
 
-
-@dataclass(frozen=True, kw_only=True)
-class FetchOptions:
-    output_dir: Path
-    max_pages: int = 5
-    interval_seconds: float = 60.0
-    parse_on_save: bool = True
-    dry_run: bool = False
-
-
-def check_for_challenge_text(html_content: str) -> bool:
-    """Inspect page HTML for anti-bot or CAPTCHA challenge markers."""
-    lower_content = html_content.lower()
-    markers = (
-        "cf-browser-verification",
-        "challenge-platform",
-        "g-recaptcha",
-        "hcaptcha",
-        "perimeterx",
-        "please verify you are a human",
-        "access denied - captcha",
-        "attention required! | cloudflare",
-        "akamai bot manager",
-    )
-    return any(marker in lower_content for marker in markers)
-
-
-def parse_saved_pages(output_dir: Path) -> int:
-    """Parse all saved HTML pages in output_dir and print acquired listings summary."""
-    importer = ManualAutoTraderImporter()
-    total_listings = 0
-    html_files = sorted(output_dir.glob("*.html"))
-    if not html_files:
-        print(f"No HTML files found in {output_dir}")
-        return 0
-
-    print(f"Parsing {len(html_files)} saved Auto Trader HTML files...")
-    for file_path in html_files:
-        snapshot = importer.import_from_html_file(str(file_path))
-        print(
-            f"  - {file_path.name}: {len(snapshot.listings)} valid market listings parsed"
-        )
-        total_listings += len(snapshot.listings)
-
-    print(
-        f"Total acquired Auto Trader listings from saved pages: {total_listings}"
-    )
-    return total_listings
+try:
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import Page, sync_playwright
+except ImportError:  # pragma: no cover - exercised only when playwright is missing
+    PlaywrightError = None  # type: ignore[assignment,misc]
+    Page = None  # type: ignore[assignment,misc]
+    sync_playwright = None  # type: ignore[assignment,misc]
 
 
 def _countdown_pacing(seconds: float) -> None:
-    """Show a real-time countdown in the terminal during cadence delay."""
+    """Show a real-time countdown during the cadence delay."""
     remaining = int(seconds)
     print(
-        f"Pacing cadence: {remaining}s remaining before next scroll batch...",
+        f"Pacing cadence: {remaining}s remaining before next scroll...",
         end="",
         flush=True,
     )
@@ -84,159 +57,142 @@ def _countdown_pacing(seconds: float) -> None:
     print(" Ready!")
 
 
-def run_headed_fetch(options: FetchOptions) -> int:
-    """Execute the headed Playwright browser capture session for Auto Trader."""
-    if options.dry_run:
-        return parse_saved_pages(options.output_dir)
+class _PlaywrightPageSource:
+    """PageSource adapter over a Playwright page using Auto Trader's infinite scroll."""
 
-    try:
-        from playwright.sync_api import (
-            sync_playwright,
-        )
-    except ImportError:
-        print(
-            "Playwright is not installed. To install: uv pip install playwright && playwright install chromium"
-        )
-        print("Falling back to parsing existing saved files.")
-        return parse_saved_pages(options.output_dir)
+    def __init__(self, page: Page) -> None:
+        self._page = page
 
-    options.output_dir.mkdir(parents=True, exist_ok=True)
-    importer = ManualAutoTraderImporter()
-    total_acquired = 0
+    def current_html(self) -> str:
+        self._raise_if_access_redirect()
+        try:
+            self._page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+            self._page.wait_for_timeout(500)
+            self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            self._page.wait_for_timeout(1000)
+            return self._page.content()
+        except (PlaywrightError, TimeoutError, RuntimeError, ValueError) as error:
+            raise CaptureChallengeError(
+                f"Could not read the current page: {error}"
+            ) from error
+
+    def advance(self) -> bool:
+        """Scroll one batch; the capture kernel stops when new IDs run out."""
+        self._raise_if_access_redirect()
+        try:
+            for _ in range(3):
+                self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                self._page.wait_for_timeout(1200)
+            self._raise_if_access_redirect()
+            return True
+        except (PlaywrightError, TimeoutError, RuntimeError, ValueError) as error:
+            raise CaptureChallengeError(
+                f"Could not scroll the results: {error}"
+            ) from error
+
+    def _raise_if_access_redirect(self) -> None:
+        url = self._page.url.lower()
+        if any(token in url for token in ("/login", "/signin", "/sign-in", "/logon")):
+            raise CaptureChallengeError(
+                "Auto Trader redirected to a login or access page — the search "
+                "session was challenged. Halting without bypass; pages captured "
+                "so far are saved."
+            )
+
+
+def run_capture_command(options: CaptureOptions) -> int:
+    """Open the browser, run one capture, save it, and print the summary."""
+    if sync_playwright is None:
+        print("Playwright is required for the Auto Trader capture command.")
+        print("Install with: uv pip install playwright && playwright install chromium")
+        return 2
 
     print("=" * 70)
-    print("Auto Trader Headed Browser Capture Tool (Infinite Scroll)")
-    print(f"Output directory : {options.output_dir}")
-    print(f"Max scroll batches: {options.max_pages}")
-    print(
-        f"Interval         : {options.interval_seconds}s (cadence: max 1 batch/min)"
-    )
+    print("Auto Trader capture command")
+    print(f"Search name : {options.search_name}")
+    print(f"Result limit: {options.movement_limit}")
+    print(f"Move delay  : {options.movement_delay_seconds}s")
+    print(f"Capture dir : {options.data_dir}")
     print("=" * 70)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)
-        context = browser.new_context()
-        page = context.new_page()
-
-        print(
-            "\n[Step 1] Opening browser window to https://www.autotrader.co.uk ..."
-        )
-        print(
-            "Please navigate to your car search results page (apply make/model filters)."
-        )
-        print(
-            "When the search results are displayed on screen, return here and press ENTER.\n"
-        )
-        page.goto("https://www.autotrader.co.uk")
-
         try:
-            input(
-                "[Press ENTER when ready on Auto Trader search results page] > "
-            )
-        except (EOFError, KeyboardInterrupt):
-            print("\nAborting capture session.")
-            browser.close()
-            return 0
+            # Fresh context: no stored credentials, cookies, or login sessions.
+            context = browser.new_context()
+            page = context.new_page()
+            page.goto("https://www.autotrader.co.uk", wait_until="domcontentloaded")
 
-        current_batch = 1
-        while current_batch <= options.max_pages:
+            print("\n[Step 1] A visible browser opened at www.autotrader.co.uk.")
+            print("No login is needed. Run your search in that browser.")
             print(
-                f"\n==================== Capturing Batch {current_batch} of {options.max_pages} ===================="
+                "When your search results are displayed, return here and press ENTER.\n"
             )
-
-            # Auto Trader uses infinite scroll: trigger smooth progressive scroll down
-            print("Triggering scroll to load additional listings...")
-            for _ in range(3):
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(1200)
-
-            html_content = page.content()
-
-            if check_for_challenge_text(html_content):
-                print(
-                    "WARNING: Bot verification or CAPTCHA challenge detected!"
+            try:
+                input(
+                    "[Press ENTER when your Auto Trader search results are on "
+                    "screen] > "
                 )
-                print(
-                    "Hard stop policy activated: halting automated capture without bypass."
-                )
-                break
+            except (EOFError, KeyboardInterrupt):
+                print("\nCapture aborted — nothing was saved.")
+                return 1
 
-            output_file = (
-                options.output_dir / f"autotrader_page_{current_batch}.html"
+            page_source = _PlaywrightPageSource(page)
+            outcome = run_capture(
+                options,
+                page_source,
+                autotrader_capture_strategy,
+                hooks=CaptureHooks(pace=_countdown_pacing),
             )
-            output_file.write_text(html_content, encoding="utf-8")
-            print(f"Saved DOM ({len(html_content):,} bytes) to: {output_file}")
+        finally:
+            browser.close()
 
-            if options.parse_on_save:
-                snapshot = importer.import_from_html(html_content)
-                print(
-                    f"Parsed {len(snapshot.listings)} cumulative valid listings with Cash Prices."
-                )
-                total_acquired = len(snapshot.listings)
-
-            if current_batch >= options.max_pages:
-                print(
-                    f"\nReached maximum scroll batch limit ({options.max_pages}). Capture session complete."
-                )
-                break
-
-            # Pacing countdown
-            print()
-            _countdown_pacing(options.interval_seconds)
-
-            current_batch += 1
-
-        browser.close()
-
-    print(
-        "\n======================================================================"
-    )
-    print(
-        f"Capture session completed successfully! Total unique listings acquired: {total_acquired}"
-    )
-    print(
-        "======================================================================"
-    )
-    return total_acquired
+    capture_dir = save_capture(outcome, options)
+    print_capture_summary(outcome, capture_dir)
+    return 0
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    parser = ArgumentParser(
-        description="Auto Trader Headed Browser Page Capture Tool"
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = ArgumentParser(description="Auto Trader search capture command")
+    parser.add_argument(
+        "--search-name",
+        required=True,
+        help="Name for this capture, saved in the manifest",
     )
     parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("data/autotrader_pages"),
-        help="Directory where captured HTML pages are stored",
-    )
-    parser.add_argument(
-        "--max-pages",
+        "--result-limit",
         type=int,
         default=5,
-        help="Maximum number of scroll batches to capture (default: 5)",
+        help="Maximum number of result pages or scroll batches (default: 5)",
     )
     parser.add_argument(
-        "--interval",
+        "--move-delay",
         type=float,
         default=60.0,
-        help="Delay in seconds between scroll batches (default: 60.0s / 1 batch per min)",
+        help=(
+            "Delay in seconds between movements; must be greater than zero "
+            "(default: 60.0)"
+        ),
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Only parse previously saved HTML pages without launching browser",
+        "--data-dir",
+        type=Path,
+        default=Path("data/captures/autotrader"),
+        help="Directory where captures are saved (default: data/captures/autotrader)",
     )
-
     args = parser.parse_args(argv)
-    options = FetchOptions(
-        output_dir=args.output_dir,
-        max_pages=args.max_pages,
-        interval_seconds=args.interval,
-        dry_run=args.dry_run,
-    )
-    run_headed_fetch(options)
+    try:
+        options = CaptureOptions(
+            search_name=args.search_name,
+            source=SourceKind.AUTOTRADER,
+            movement_limit=args.result_limit,
+            movement_delay_seconds=args.move_delay,
+            data_dir=args.data_dir,
+        )
+    except ValueError as error:
+        parser.error(str(error))
+    return run_capture_command(options)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))
