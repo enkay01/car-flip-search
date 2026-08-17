@@ -4,8 +4,10 @@ import contextlib
 import json
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import TypedDict
+from urllib.parse import unquote
 
 from .model import (
     AuctionLot,
@@ -289,110 +291,253 @@ def _parse_bca_html(html_content: str) -> tuple[BcaRawRecord, ...]:
         extracted = _extract_bca_records_from_json_string(script_json)
         all_records.extend(extracted)
 
-    # Also extract cards from rendered BCA HTML search result pages
-    dom_cards = _extract_bca_cards_from_html(html_content)
-    all_records.extend(dom_cards)
+    # Extract cards from rendered BCA HTML search result pages. Invalid cards
+    # are discarded silently here; the capture command surfaces skip reasons.
+    for observation in observe_bca_cards(html_content):
+        result = validate_bca_observation(observation)
+        if result.record is not None:
+            all_records.append(result.record)
 
     return tuple(all_records)
 
 
-class _CardSpecs(TypedDict):
-    mileage: int
-    year: int
-    fuel: str
-    transmission: str
-    doors: int
+@dataclass(frozen=True, kw_only=True)
+class BcaCardObservation:
+    """Every field visible on one BCA search card; None means not observed.
+
+    Nothing here is invented: each attribute is populated only from content
+    present on the page, so validation can distinguish a missing field from a
+    fabricated default.
+    """
+
+    lot_id: str | None = None
+    make: str | None = None
+    model_variant: str | None = None
+    registration_year: int | None = None
+    fuel_type: str | None = None
+    transmission: str | None = None
+    body_style: str | None = None
+    door_count: int | None = None
+    mileage: int | None = None
+    cap_clean_price: int | None = None
+    clean_condition: bool | None = None
+    write_off_reported: bool | None = None
+    accident_damage_reported: bool | None = None
+    trim: str | None = None
 
 
-def _extract_bca_cards_from_html(html_content: str) -> list[BcaRawRecord]:
-    card_splits = re.split(r'data-testid=["\']card-link-desktop["\']', html_content)
-    if len(card_splits) <= 1:
-        return []
+_WRITE_OFF_MARKERS = (r"\bcat\s?[absn]\b", r"write-?off\b", r"written off")
+_ACCIDENT_DAMAGE_MARKERS = (
+    r"accident damage",
+    r"accident history",
+    r"previous accident",
+)
+_BCA_BODY_STYLE_ALIASES = {
+    "cabriolet": "Cabriolet",
+    "convertible": "Convertible",
+    "coupe": "Coupe",
+    "estate": "Estate",
+    "hatchback": "Hatchback",
+    "mpv": "MPV",
+    "panelvan": "PanelVan",
+    "pickup": "Pick-up",
+    "roadster": "Roadster",
+    "saloon": "Saloon",
+    "stationwagon": "StationWagon",
+    "suv": "SUV",
+    "van": "Van",
+}
 
-    records: list[BcaRawRecord] = []
-    for chunk in card_splits[1:]:
-        card = _parse_single_bca_card(chunk)
-        if card is not None:
-            records.append(card)
 
-    return records
+def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
-def _parse_single_bca_card(chunk: str) -> BcaRawRecord | None:
-    try:
-        vrm_match = re.search(r'/lot/([^?\"\'/\s]+)', chunk)
-        if not vrm_match:
-            return None
-        vrm = vrm_match.group(1).replace("%20", " ").strip()
+def _non_blank(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
-        title_match = re.search(
-            r'VehicleResultCardDesktop__StyledLink[^\"]*\"[^>]*>([^<]+)</a>', chunk
-        )
-        if not title_match:
-            return None
-        title = title_match.group(1).strip()
 
-        cap_match = re.search(r"CAP Clean</p>\s*<p[^>]*>£([\d,]+)</p>", chunk)
-        if not cap_match:
-            return None
-        cap_clean = int(cap_match.group(1).replace(",", ""))
+def observe_bca_cards(html_content: str) -> tuple[BcaCardObservation, ...]:
+    """Extract one observation per vehicle from a BCA search results page.
 
-        items = re.findall(r'<p [^>]*>([^<]+)</p>', chunk)
-        specs = _extract_card_specs(items)
-        if specs is None:
-            return None
+    Each vehicle renders as a link stub and a full card under the same
+    card-link-desktop anchor; per-vehicle observations are merged so a vehicle
+    is never observed twice within one page.
+    """
+    card_chunks = re.split(r'data-testid=["\']card-link-desktop["\']', html_content)
+    if len(card_chunks) <= 1:
+        return ()
 
-        parts = title.split()
-        make = parts[0]
-        model_variant = parts[1] if len(parts) > 1 else ""
-        body_style = parts[-1] if len(parts) > 2 else "Hatchback"
-        trim = " ".join(parts[2:-1]) if len(parts) > 3 else None
+    observed = [
+        observation
+        for chunk in card_chunks[1:]
+        if (observation := _observe_bca_card_chunk(chunk)) is not None
+    ]
 
-        identity: BcaRawIdentity = {
-            "make": make,
-            "model_variant": model_variant,
-            "registration_year": specs["year"],
-            "fuel_type": specs["fuel"],
-            "transmission": specs["transmission"],
-            "body_style": body_style,
-            "door_count": specs["doors"],
-        }
-        record: BcaRawRecord = {
-            "id": vrm,
-            "identity": identity,
-            "mileage": specs["mileage"],
-            "cap_clean_price": cap_clean,
-            "clean_condition": True,
-            "write_off_reported": False,
-            "accident_damage_reported": False,
-        }
-        if trim:
-            record["trim"] = trim
-        return record
-    except (KeyError, TypeError, ValueError, IndexError):
+    merged: dict[str, BcaCardObservation] = {}
+    order: list[str] = []
+    for observation in observed:
+        if observation.lot_id is None:
+            continue
+        if observation.lot_id in merged:
+            merged[observation.lot_id] = _merge_bca_observations(
+                merged[observation.lot_id], observation
+            )
+        else:
+            merged[observation.lot_id] = observation
+            order.append(observation.lot_id)
+
+    named = tuple(merged[lid] for lid in order)
+    unnamed = tuple(obs for obs in observed if obs.lot_id is None)
+    return named + unnamed
+
+
+def _observe_bca_card_chunk(chunk: str) -> BcaCardObservation | None:
+    """Build an observation from one card chunk; None when the chunk is not a card."""
+    is_card = (
+        'data-testid="condition-report-icon"' in chunk
+        or "CAP Clean</p>" in chunk
+        or "VehicleResultCardDesktop__StyledLink" in chunk
+        or "/lot/" in chunk
+    )
+    if not is_card:
         return None
 
+    lot_match = re.search(r"/lot/([^?\"'/]+)", chunk)
+    lot_id = unquote(lot_match.group(1)).strip() if lot_match else None
 
-def _extract_card_specs(items: list[str]) -> _CardSpecs | None:
-    extracted: dict[str, str | int] = {}
+    title_match = re.search(
+        r"VehicleResultCardDesktop__StyledLink[^\"]*\"[^>]*>([^<]+)</a>", chunk
+    )
+    title = title_match.group(1).strip() if title_match else None
+
+    cap_match = re.search(r"CAP Clean</p>\s*<p[^>]*>£([\d,]+)</p>", chunk)
+    cap_clean_price = int(cap_match.group(1).replace(",", "")) if cap_match else None
+
+    make, model_variant, body_style, trim = _parse_bca_title(title)
+
+    items = re.findall(r"<p [^>]*>([^<]+)</p>", chunk)
+    fields = _observe_card_spec_fields(items)
+
+    condition_block_present = 'data-testid="condition-report-icon"' in chunk
+    return BcaCardObservation(
+        lot_id=lot_id,
+        make=make,
+        model_variant=model_variant,
+        registration_year=fields.get("registration_year"),
+        fuel_type=fields.get("fuel_type"),
+        transmission=fields.get("transmission"),
+        body_style=body_style,
+        door_count=fields.get("door_count"),
+        mileage=fields.get("mileage"),
+        cap_clean_price=cap_clean_price,
+        clean_condition=True if condition_block_present else None,
+        write_off_reported=_contains_any(chunk, _WRITE_OFF_MARKERS),
+        accident_damage_reported=_contains_any(chunk, _ACCIDENT_DAMAGE_MARKERS),
+        trim=trim,
+    )
+
+
+def _parse_bca_title(
+    title: str | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Parse identity only when the title has a known body-style suffix.
+
+    BCA's rendered cards expose the vehicle title as plain text rather than
+    separate identity attributes.  The observed search pages use a one-token
+    make, a model variant, optional trim text, and a final body-style token.
+    An arbitrary final token is not evidence of a body style, so titles without
+    a recognized suffix remain incomplete and are rejected by validation.
+    """
+    if not title:
+        return None, None, None, None
+
+    parts = title.split()
+    if not parts:
+        return None, None, None, None
+
+    make = parts[0]
+    model_variant = parts[1] if len(parts) > 1 else None
+    body_style: str | None = None
+    body_style_start = len(parts)
+
+    for width in (2, 1):
+        if len(parts) < width:
+            continue
+        candidate = " ".join(parts[-width:])
+        key = re.sub(r"[^a-z0-9]", "", candidate.casefold())
+        if key in _BCA_BODY_STYLE_ALIASES:
+            body_style = _BCA_BODY_STYLE_ALIASES[key]
+            body_style_start = len(parts) - width
+            break
+
+    trim = (
+        " ".join(parts[2:body_style_start])
+        if body_style is not None and body_style_start > 2
+        else None
+    )
+    return make, model_variant, body_style, trim
+
+
+def _merge_bca_observations(
+    left: BcaCardObservation, right: BcaCardObservation
+) -> BcaCardObservation:
+    """Merge two observations of the same lot, preferring observed values."""
+    return BcaCardObservation(
+        lot_id=left.lot_id,
+        make=left.make or right.make,
+        model_variant=left.model_variant or right.model_variant,
+        registration_year=left.registration_year or right.registration_year,
+        fuel_type=left.fuel_type or right.fuel_type,
+        transmission=left.transmission or right.transmission,
+        body_style=left.body_style or right.body_style,
+        door_count=left.door_count or right.door_count,
+        mileage=left.mileage or right.mileage,
+        cap_clean_price=left.cap_clean_price or right.cap_clean_price,
+        clean_condition=left.clean_condition or right.clean_condition,
+        write_off_reported=left.write_off_reported or right.write_off_reported,
+        accident_damage_reported=(
+            left.accident_damage_reported or right.accident_damage_reported
+        ),
+        trim=left.trim or right.trim,
+    )
+
+
+class _CardSpecFields(TypedDict, total=False):
+    mileage: int
+    registration_year: int
+    fuel_type: str
+    transmission: str
+    door_count: int
+
+
+def _observe_card_spec_fields(items: list[str]) -> _CardSpecFields:
+    """Extract each spec field independently so a missing field hides nothing."""
+    fields: _CardSpecFields = {}
     for item in items:
-        m_match = re.search(r"([\d,]+)\s*miles", item, re.IGNORECASE)
-        if m_match and "mileage" not in extracted:
-            extracted["mileage"] = int(m_match.group(1).replace(",", ""))
-        y_match = re.search(r"\b(19\d\d|20\d\d)\b", item)
-        if y_match and "year" not in extracted and "reg" in item.lower():
-            extracted["year"] = int(y_match.group(1))
+        if "mileage" not in fields:
+            mileage_match = re.search(r"([\d,]+)\s*miles", item, re.IGNORECASE)
+            if mileage_match:
+                fields["mileage"] = int(mileage_match.group(1).replace(",", ""))
+        if "registration_year" not in fields:
+            year_match = re.search(r"\b(19\d\d|20\d\d)\b", item)
+            if year_match and "reg" in item.lower():
+                fields["registration_year"] = int(year_match.group(1))
         item_lower = item.lower()
-        if item_lower in (
+        if "fuel_type" not in fields and item_lower in (
             "petrol",
             "diesel",
             "electric",
             "hybrid",
+            "petrol/electric",
             "petrol plug-in hybrid",
             "diesel plug-in hybrid",
         ):
-            extracted["fuel"] = item
-        if item_lower in (
+            fields["fuel_type"] = item
+        if "transmission" not in fields and item_lower in (
             "manual",
             "automatic",
             "auto clutch",
@@ -400,21 +545,99 @@ def _extract_card_specs(items: list[str]) -> _CardSpecs | None:
             "cvt",
             "cvt/manual mode",
         ):
-            extracted["transmission"] = item
-        d_match = re.search(r"(\d+)\s*doors", item, re.IGNORECASE)
-        if d_match and "doors" not in extracted:
-            extracted["doors"] = int(d_match.group(1))
+            fields["transmission"] = item
+        if "door_count" not in fields:
+            door_match = re.search(r"(\d+)\s*doors", item, re.IGNORECASE)
+            if door_match:
+                fields["door_count"] = int(door_match.group(1))
+    return fields
 
-    try:
-        return _CardSpecs(
-            mileage=int(extracted["mileage"]),
-            year=int(extracted["year"]),
-            fuel=str(extracted["fuel"]),
-            transmission=str(extracted["transmission"]),
-            doors=int(extracted["doors"]),
-        )
-    except (KeyError, TypeError, ValueError):
-        return None
+
+@dataclass(frozen=True)
+class BcaValidationResult:
+    """Outcome of validating one observed card: its record and every skip reason."""
+
+    record: BcaRawRecord | None
+    reasons: tuple[str, ...]
+
+
+def validate_bca_observation(
+    observation: BcaCardObservation,
+) -> BcaValidationResult:
+    """Validate one observed card into a record plus every reason it is skipped.
+
+    Missing or invalid required fields yield skip reasons; the tool never
+    invents identity, mileage, CAP Clean Price, or condition values.
+    """
+    reasons: list[str] = []
+
+    lot_id = _non_blank(observation.lot_id)
+    if lot_id is None:
+        reasons.append("missing lot id")
+    make = _non_blank(observation.make)
+    if make is None:
+        reasons.append("missing make")
+    model_variant = _non_blank(observation.model_variant)
+    if model_variant is None:
+        reasons.append("missing model variant")
+    fuel_type = _non_blank(observation.fuel_type)
+    if fuel_type is None:
+        reasons.append("missing fuel type")
+    transmission = _non_blank(observation.transmission)
+    if transmission is None:
+        reasons.append("missing transmission")
+    body_style = _non_blank(observation.body_style)
+    if body_style is None:
+        reasons.append("missing body style")
+
+    if observation.registration_year is None:
+        reasons.append("missing registration year")
+    elif not 1886 <= observation.registration_year <= 9999:
+        reasons.append("invalid registration year")
+    if observation.door_count is None:
+        reasons.append("missing door count")
+    elif observation.door_count < 1:
+        reasons.append("invalid door count")
+    if observation.mileage is None:
+        reasons.append("missing mileage")
+    elif observation.mileage < 0:
+        reasons.append("invalid mileage")
+    if observation.cap_clean_price is None:
+        reasons.append("missing CAP Clean price")
+    elif observation.cap_clean_price < 0:
+        reasons.append("invalid CAP Clean price")
+    if observation.clean_condition is None:
+        reasons.append("condition not reported on search card")
+    elif observation.clean_condition is False:
+        reasons.append("condition not clean")
+    if observation.write_off_reported is True:
+        reasons.append("write-off reported on search card")
+    if observation.accident_damage_reported is True:
+        reasons.append("accident damage reported on search card")
+
+    if reasons:
+        return BcaValidationResult(record=None, reasons=tuple(reasons))
+
+    record: BcaRawRecord = {
+        "id": lot_id,
+        "identity": {
+            "make": make,
+            "model_variant": model_variant,
+            "registration_year": observation.registration_year,
+            "fuel_type": fuel_type,
+            "transmission": transmission,
+            "body_style": body_style,
+            "door_count": observation.door_count,
+        },
+        "mileage": observation.mileage,
+        "cap_clean_price": observation.cap_clean_price,
+        "clean_condition": True,
+        "write_off_reported": False,
+        "accident_damage_reported": False,
+    }
+    if observation.trim:
+        record["trim"] = observation.trim
+    return BcaValidationResult(record=record, reasons=())
 
 
 def _extract_bca_records_from_json_string(script_json: str) -> list[BcaRawRecord]:
@@ -461,12 +684,16 @@ def _extract_bca_records_from_json_string(script_json: str) -> list[BcaRawRecord
         if hasattr(current, "values"):
             with contextlib.suppress(AttributeError, TypeError):
                 for val in current.values():
-                    if hasattr(val, "values") or (hasattr(val, "__iter__") and not hasattr(val, "lower")):
+                    if hasattr(val, "values") or (
+                        hasattr(val, "__iter__") and not hasattr(val, "lower")
+                    ):
                         queue.append(val)
         elif hasattr(current, "__iter__") and not hasattr(current, "lower"):
             with contextlib.suppress(AttributeError, TypeError):
                 for elem in current:
-                    if hasattr(elem, "values") or (hasattr(elem, "__iter__") and not hasattr(elem, "lower")):
+                    if hasattr(elem, "values") or (
+                        hasattr(elem, "__iter__") and not hasattr(elem, "lower")
+                    ):
                         queue.append(elem)
 
     return records
@@ -532,13 +759,9 @@ def _parse_autotrader_html(html_content: str) -> tuple[AutoTraderRawRecord, ...]
 def _extract_autotrader_cards_from_html(
     html_content: str,
 ) -> list[AutoTraderRawRecord]:
-    card_splits = re.split(
-        r'<li [^>]*data-advertid=[\"\']\d+[\"\']', html_content
-    )
+    card_splits = re.split(r"<li [^>]*data-advertid=[\"\']\d+[\"\']", html_content)
     if len(card_splits) <= 1:
-        card_splits = re.split(
-            r'data-testid=["\']search-listing["\']', html_content
-        )
+        card_splits = re.split(r'data-testid=["\']search-listing["\']', html_content)
     if len(card_splits) <= 1:
         card_splits = re.split(r'href=["\'][^"\']*/car-details/', html_content)
     if len(card_splits) <= 1:
@@ -558,23 +781,21 @@ def _extract_autotrader_cards_from_html(
 def _parse_single_autotrader_card(chunk: str) -> AutoTraderRawRecord | None:
     try:
         id_match = re.search(
-            r'(?:id=[\"\']|data-advertid=[\"\']|/car-details/)(\d{10,})', chunk
+            r"(?:id=[\"\']|data-advertid=[\"\']|/car-details/)(\d{10,})", chunk
         )
         if not id_match:
             return None
         advert_id = id_match.group(1).strip()
 
         title_match = re.search(
-            r'data-testid=[\"\']search-listing-title[\"\'][^>]*>([^<]+)', chunk
-        ) or re.search(
-            r'<h3[^>]*>([^<]+)', chunk
-        )
+            r"data-testid=[\"\']search-listing-title[\"\'][^>]*>([^<]+)", chunk
+        ) or re.search(r"<h3[^>]*>([^<]+)", chunk)
         if not title_match:
             return None
         title = title_match.group(1).strip()
 
         sub_match = re.search(
-            r'data-testid=[\"\']search-listing-subtitle[\"\'][^>]*>([^<]+)', chunk
+            r"data-testid=[\"\']search-listing-subtitle[\"\'][^>]*>([^<]+)", chunk
         )
         subtitle = sub_match.group(1).strip() if sub_match else ""
 
@@ -619,14 +840,14 @@ def _extract_autotrader_card_specs(
         cash_price = int(price_match.group(1).replace(",", ""))
 
         mileage_match = re.search(
-            r'data-testid=[\"\']mileage[\"\'][^>]*>([\d,]+)\s*miles', chunk
+            r"data-testid=[\"\']mileage[\"\'][^>]*>([\d,]+)\s*miles", chunk
         ) or re.search(r"([\d,]+)\s*miles", chunk)
         if not mileage_match:
             return None
         mileage = int(mileage_match.group(1).replace(",", ""))
 
         year_match = re.search(
-            r'data-testid=[\"\']registered_year[\"\'][^>]*>.*?\b(19\d\d|20\d\d)\b',
+            r"data-testid=[\"\']registered_year[\"\'][^>]*>.*?\b(19\d\d|20\d\d)\b",
             chunk,
         ) or re.search(r"\b(19\d\d|20\d\d)\b", chunk)
         if not year_match:
@@ -662,16 +883,12 @@ def _extract_autotrader_card_specs(
             body_style = "SUV"
         elif re.search(r"\b(coupe)\b", full_text, re.IGNORECASE):
             body_style = "Coupe"
-        elif re.search(
-            r"\b(convertible|cabriolet)\b", full_text, re.IGNORECASE
-        ):
+        elif re.search(r"\b(convertible|cabriolet)\b", full_text, re.IGNORECASE):
             body_style = "Convertible"
         else:
             body_style = "Hatchback"
 
-        seller_type = (
-            "private" if "private seller" in chunk.lower() else "dealer"
-        )
+        seller_type = "private" if "private seller" in chunk.lower() else "dealer"
 
         return _AutoTraderCardSpecs(
             mileage=mileage,
@@ -724,9 +941,7 @@ def _extract_autotrader_records_from_json_string(
                     "cash_price": int(current["cash_price"]),
                     "seller_type": raw_seller,
                 }
-                trim_val = (
-                    current.get("trim") if hasattr(current, "get") else None
-                )
+                trim_val = current.get("trim") if hasattr(current, "get") else None
                 if trim_val is not None:
                     record["trim"] = str(trim_val)
                 records.append(record)

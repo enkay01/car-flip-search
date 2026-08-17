@@ -12,13 +12,12 @@ from typing import Protocol
 from .source_acquisition import (
     AutoTraderRawIdentity,
     AutoTraderRawRecord,
-    BcaRawIdentity,
-    BcaRawRecord,
 )
 
 
 class AccessStatus(StrEnum):
     PERMITTED_AUTOMATED = "permitted_automated"
+    PERMITTED_USER_ASSISTED = "permitted_user_assisted"
     NO_GO_MANUAL_REQUIRED = "no_go_manual_required"
     CHALLENGED_HALTED = "challenged_halted"
     THROTTLED_HALTED = "throttled_halted"
@@ -33,33 +32,6 @@ class SourceAccessDecision:
     usage_constraints: str
     rate_limit_policy: str
     reason: str
-
-
-@dataclass
-class BcaCredentials:
-    """Isolated BCA credentials with secret masking and memory revocation."""
-
-    api_key: str
-    bearer_token: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.api_key.strip():
-            raise ValueError("BCA API key must be a non-blank string")
-
-    def __repr__(self) -> str:
-        token_presence = "present" if self.bearer_token else "none"
-        return f"BcaCredentials(api_key='***', bearer_token='{token_presence}')"
-
-    def __str__(self) -> str:
-        return self.__repr__()
-
-    def is_valid(self) -> bool:
-        return bool(self.api_key.strip())
-
-    def revoke(self) -> None:
-        """Clear active credential material immediately from memory."""
-        self.api_key = ""
-        self.bearer_token = None
 
 
 @dataclass
@@ -99,26 +71,22 @@ class AutoTraderCredentials:
         self.access_token = None
 
 
-def assess_bca_access(
-    credentials: BcaCredentials | None = None,
-) -> SourceAccessDecision:
-    """Assess whether BCA automated access is permitted or manual import is required."""
-    if credentials is None or not credentials.is_valid():
-        return SourceAccessDecision(
-            source_name="BCA",
-            status=AccessStatus.NO_GO_MANUAL_REQUIRED,
-            mechanism="Manual trade portal export (JSON/CSV)",
-            usage_constraints="No scraping permitted; trade buyer account export required",
-            rate_limit_policy="Conservative cadence (1 req/s) when API enabled; N/A for manual export",
-            reason="Automated BCA access requires configured partner API credentials; falling back to supported manual import",
-        )
+def assess_bca_access() -> SourceAccessDecision:
+    """Describe the sole permitted BCA access mechanism: user-assisted capture."""
     return SourceAccessDecision(
         source_name="BCA",
-        status=AccessStatus.PERMITTED_AUTOMATED,
-        mechanism="BCA Partner REST API / Authenticated Feed",
-        usage_constraints="Read-only catalog inspection with clean CAP valuation; no scraping of anti-bot protected pages",
-        rate_limit_policy="Conservative cadence (1 req/s, max concurrency = 1, Retry-After backoff)",
-        reason="Permitted account-backed API credentials provided",
+        status=AccessStatus.PERMITTED_USER_ASSISTED,
+        mechanism="User-assisted headed browser capture (tools/bca_headed_fetch.py)",
+        usage_constraints=(
+            "Fresh visible browser session per run; the user logs in and runs one "
+            "search; the tool never receives, stores, or persists BCA credentials "
+            "or sessions; no CAPTCHA bypass"
+        ),
+        rate_limit_policy="Configurable page delay (default 60s); page limit default 5",
+        reason=(
+            "The BCA API-key credential path is removed; capture requires the "
+            "user's own authenticated search session"
+        ),
     )
 
 
@@ -186,36 +154,45 @@ class SourceAccessStoppedError(SourceAccessError):
     """Raised when source access is stopped due to hard stop policy."""
 
 
+_CHALLENGE_MARKERS: tuple[tuple[str, str], ...] = (
+    ("cf-browser-verification", "Cloudflare browser verification"),
+    ("challenge-platform", "a bot challenge platform"),
+    ("g-recaptcha", "a reCAPTCHA challenge"),
+    ("hcaptcha", "an hCaptcha challenge"),
+    ("perimeterx", "a PerimeterX challenge"),
+    ("please verify you are a human", "a human-verification prompt"),
+    ("access denied - captcha", "a CAPTCHA access-denial page"),
+    ("access denied", "an access-denial page"),
+    ("login required", "a login-required page"),
+    ("please log in", "a login-required page"),
+    ("sign in to continue", "a sign-in page"),
+    ("session expired", "a session-expired page"),
+    ("you have been logged out", "a logged-out page"),
+    ("attention required! | cloudflare", "a Cloudflare attention page"),
+)
+
+
+def detect_challenge_markers(html_content: str) -> str | None:
+    """Return a reason when anti-bot, access-denial, or auth markers appear."""
+    lower_content = html_content.lower()
+    for marker, description in _CHALLENGE_MARKERS:
+        if marker in lower_content:
+            return f"{description} detected — halting without bypass"
+    return None
+
+
 def detect_bot_challenge(response: HttpResponse) -> bool:
     """Inspect response headers and body for anti-bot / CAPTCHA challenge markers."""
-    body_lower = response.body.lower()
     headers_lower = {k.lower(): v.lower() for k, v in response.headers.items()}
-
     challenge_headers = (
         "cf-mitigated",
         "x-amz-captcha",
         "x-perimeterx",
         "cf-chl-bypass",
     )
-    for header in challenge_headers:
-        if header in headers_lower:
-            return True
-
-    challenge_keywords = (
-        "cf-browser-verification",
-        "challenge-platform",
-        "g-recaptcha",
-        "hcaptcha",
-        "perimeterx",
-        "please verify you are a human",
-        "access denied - captcha",
-        "attention required! | cloudflare",
-    )
-    for keyword in challenge_keywords:
-        if keyword in body_lower:
-            return True
-
-    return False
+    if any(header in headers_lower for header in challenge_headers):
+        return True
+    return detect_challenge_markers(response.body) is not None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -295,108 +272,6 @@ class SourceClientOptions:
     cadence_policy: CadencePolicy | None = None
     backoff_policy: BackoffPolicy | None = None
     cache: SourceCache | None = None
-
-
-class BcaSourceClient:
-    """Client for authenticated, compliant access to BCA auction lot data."""
-
-    def __init__(
-        self,
-        credentials: BcaCredentials,
-        transport: HttpTransport,
-        options: SourceClientOptions | None = None,
-    ) -> None:
-        if not credentials.is_valid():
-            raise ValueError("Valid BCA credentials are required")
-        opts = options or SourceClientOptions()
-        self._credentials = credentials
-        self._transport = transport
-        self._base_url = (opts.base_url or "https://api.bca.example.com/v1").rstrip("/")
-        self._cadence = opts.cadence_policy or CadencePolicy(min_interval_seconds=1.0)
-        self._backoff = opts.backoff_policy or BackoffPolicy()
-        self._cache = opts.cache or SourceCache()
-
-    def read_lot(self, lot_id: str, *, use_cache: bool = True) -> BcaRawRecord | None:
-        """Execute a minimal authenticated read for a single BCA auction lot."""
-        clean_id = lot_id.strip()
-        if not clean_id:
-            raise ValueError("Lot ID must be non-blank")
-
-        cache_key = f"bca:lot:{clean_id}"
-        if use_cache:
-            cached_body = self._cache.get(cache_key)
-            if cached_body is not None:
-                return _parse_bca_payload(cached_body)
-
-        headers = {
-            "X-API-Key": self._credentials.api_key,
-            "Accept": "application/json",
-            "User-Agent": "CarFlipSearch/0.1.0",
-        }
-        if self._credentials.bearer_token:
-            headers["Authorization"] = f"Bearer {self._credentials.bearer_token}"
-
-        url = f"{self._base_url}/lots/{clean_id}"
-        request = HttpRequest(method="GET", url=url, headers=headers)
-
-        response = self._execute_request(request)
-        if response.status_code == 404:
-            return None
-        if response.status_code != 200:
-            raise SourceAccessError(f"Unexpected status code {response.status_code}")
-
-        if use_cache:
-            self._cache.set(cache_key, response.body)
-
-        return _parse_bca_payload(response.body)
-
-    def read_lots(
-        self, lot_ids: Sequence[str], *, use_cache: bool = True
-    ) -> tuple[BcaRawRecord, ...]:
-        """Read multiple lots sequentially with deduplication and cadence."""
-        seen: set[str] = set()
-        unique_ids: list[str] = []
-        for lid in lot_ids:
-            clean = lid.strip()
-            if clean and clean not in seen:
-                seen.add(clean)
-                unique_ids.append(clean)
-
-        records: list[BcaRawRecord] = []
-        for lid in unique_ids:
-            record = self.read_lot(lid, use_cache=use_cache)
-            if record is not None:
-                records.append(record)
-        return tuple(records)
-
-    def _execute_request(self, request: HttpRequest) -> HttpResponse:
-        attempt = 0
-        while True:
-            response = self._transport.send(request)
-
-            if detect_bot_challenge(response):
-                raise BotChallengeDetectedError(
-                    "Anti-bot or CAPTCHA challenge detected on BCA endpoint. Halting access without bypass."
-                )
-
-            if response.status_code in (401, 403):
-                raise AuthenticationChallengeError(
-                    f"Authentication challenge received from BCA ({response.status_code}). Halting access."
-                )
-
-            if response.status_code == 429:
-                if attempt >= self._backoff.max_retries:
-                    raise RepeatedThrottlingError(
-                        f"Repeated throttling (429) from BCA after {attempt} retries. Halting access."
-                    )
-                retry_after = parse_retry_after(response.headers.get("Retry-After"))
-                _delay = self._backoff.delay_for_attempt(
-                    attempt, retry_after=retry_after
-                )
-                attempt += 1
-                continue
-
-            return response
 
 
 class AutoTraderSourceClient:
@@ -508,35 +383,6 @@ class AutoTraderSourceClient:
                 continue
 
             return response
-
-
-def _parse_bca_payload(raw_json: str) -> BcaRawRecord | None:
-    try:
-        data = json.loads(raw_json)
-        ident_raw = data["identity"]
-        identity: BcaRawIdentity = {
-            "make": str(ident_raw["make"]),
-            "model_variant": str(ident_raw["model_variant"]),
-            "registration_year": int(ident_raw["registration_year"]),
-            "fuel_type": str(ident_raw["fuel_type"]),
-            "transmission": str(ident_raw["transmission"]),
-            "body_style": str(ident_raw["body_style"]),
-            "door_count": int(ident_raw["door_count"]),
-        }
-        record: BcaRawRecord = {
-            "id": str(data["id"]),
-            "identity": identity,
-            "mileage": int(data["mileage"]),
-            "cap_clean_price": int(data["cap_clean_price"]),
-            "clean_condition": bool(data["clean_condition"]),
-            "write_off_reported": bool(data["write_off_reported"]),
-            "accident_damage_reported": bool(data["accident_damage_reported"]),
-        }
-        if "trim" in data and data["trim"] is not None:
-            record["trim"] = str(data["trim"])
-        return record
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return None
 
 
 def _parse_autotrader_payload(raw_json: str) -> AutoTraderRawRecord | None:

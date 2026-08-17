@@ -101,3 +101,21 @@ _Avoid_: Monthly payment, finance price
 **Opportunity List**:
 The complete set of Comparison-Eligible Candidates and their valuation signals. It has no minimum-spread eligibility threshold; the user filters and sorts it.
 _Avoid_: Shortlist, qualified deals
+
+## Capture
+
+**Capture**:
+A saved BCA search produced by one run of the BCA capture command, identified by its unique Capture ID and Search Name. It keeps the original page data, the valid parsed car records, and a skipped-car log.
+_Avoid_: Download, export, scrape
+
+**Capture ID**:
+The unique identifier of a Capture, never reused or overwritten.
+_Avoid_: Folder name, timestamp
+
+**Search Name**:
+The user-supplied name of a Capture, recorded in its manifest.
+_Avoid_: Search query, filter name
+
+**Skipped-Car Log**:
+The part of a Capture that records each car the tool could not validate, identifying the lot where possible and listing every skip reason.
+_Avoid_: Error log, discard list
