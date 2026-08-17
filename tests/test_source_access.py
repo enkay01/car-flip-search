@@ -21,6 +21,7 @@ from car_flip_search import (
     RepeatedThrottlingError,
     SourceClientOptions,
     assess_auto_trader_access,
+    assess_auto_trader_capture_access,
     assess_bca_access,
     detect_bot_challenge,
     detect_challenge_markers,
@@ -71,6 +72,14 @@ def test_assess_bca_access_describes_user_assisted_capture() -> None:
     assert decision.status == AccessStatus.PERMITTED_USER_ASSISTED
     assert "headed browser" in decision.mechanism.lower()
     assert "api" not in decision.mechanism.lower()
+
+
+def test_assess_auto_trader_capture_access_describes_unauthenticated_capture() -> None:
+    decision = assess_auto_trader_capture_access()
+    assert decision.status == AccessStatus.PERMITTED_USER_ASSISTED
+    assert "headed browser" in decision.mechanism.lower()
+    assert "does not require login" in decision.reason.lower()
+    assert "capture" in decision.mechanism.lower()
 
 
 def test_assess_autotrader_access_distinguishes_permitted_and_manual_routes() -> None:

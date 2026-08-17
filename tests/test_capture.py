@@ -1,4 +1,4 @@
-"""Tests for the user-assisted BCA capture kernel (issue #8)."""
+"""Tests for the user-assisted capture kernel (issues #8 and #9)."""
 
 import json
 from dataclasses import dataclass, replace
@@ -10,10 +10,13 @@ from car_flip_search import (
     BcaAcquisition,
     BcaCardObservation,
     CaptureChallengeError,
+    CaptureHooks,
     CaptureOptions,
     CaptureOutcome,
     SkippedCar,
+    SourceKind,
     StopReason,
+    bca_capture_strategy,
     new_capture_id,
     observe_bca_cards,
     print_capture_summary,
@@ -163,23 +166,31 @@ def no_pace(_seconds: float) -> None:
 
 def test_capture_options_reject_zero_and_negative_delay() -> None:
     with pytest.raises(ValueError, match="greater than zero"):
-        CaptureOptions(search_name="BMW A-Class", page_delay_seconds=0)
+        CaptureOptions(search_name="BMW A-Class", movement_delay_seconds=0)
     with pytest.raises(ValueError, match="greater than zero"):
-        CaptureOptions(search_name="BMW A-Class", page_delay_seconds=-1)
+        CaptureOptions(search_name="BMW A-Class", movement_delay_seconds=-1)
 
 
-def test_capture_options_reject_bad_page_limit_and_blank_name() -> None:
+def test_capture_options_reject_bad_movement_limit_and_blank_name() -> None:
     with pytest.raises(ValueError, match="at least 1"):
-        CaptureOptions(search_name="BMW A-Class", page_limit=0)
+        CaptureOptions(search_name="BMW A-Class", movement_limit=0)
     with pytest.raises(ValueError, match="non-blank"):
         CaptureOptions(search_name="   ")
 
 
 def test_capture_options_defaults() -> None:
     options = CaptureOptions(search_name="BMW A-Class")
-    assert options.page_limit == 5
-    assert options.page_delay_seconds == 60.0
+    assert options.source is SourceKind.BCA
+    assert options.movement_limit == 5
+    assert options.movement_delay_seconds == 60.0
     assert options.data_dir == Path("data/captures/bca")
+
+
+def test_capture_options_default_data_dir_follows_source() -> None:
+    autotrader_options = CaptureOptions(
+        search_name="BMW A-Class", source=SourceKind.AUTOTRADER
+    )
+    assert autotrader_options.data_dir == Path("data/captures/autotrader")
 
 
 # --- Observation and validation -------------------------------------------------
@@ -320,7 +331,7 @@ def test_validation_rejects_impossible_values_without_fabrication() -> None:
 
 def test_run_capture_keeps_valid_cars_and_logs_skips() -> None:
     options = CaptureOptions(
-        search_name="BMW A-Class", page_limit=3, page_delay_seconds=1
+        search_name="BMW A-Class", movement_limit=3, movement_delay_seconds=1
     )
     good_page = make_page(make_stub(), make_card())
     bad_page = make_page(
@@ -329,79 +340,102 @@ def test_run_capture_keeps_valid_cars_and_logs_skips() -> None:
     )
     source = FakePageSource([good_page, bad_page], advance_results=[True, False])
 
-    outcome = run_capture(options, source, pace=no_pace)
+    outcome = run_capture(
+        options, source, bca_capture_strategy, hooks=CaptureHooks(pace=no_pace)
+    )
 
     assert outcome.stop_reason == StopReason.NO_FURTHER_PAGES
-    assert len(outcome.cars) == 1
-    assert outcome.cars[0]["id"] == "KS18 ZFM"
+    assert len(outcome.records) == 1
+    assert outcome.records[0]["id"] == "KS18 ZFM"
     assert len(outcome.skipped) == 1
-    assert outcome.skipped[0].lot_id == "GL70 XKF"
+    assert outcome.skipped[0].record_id == "GL70 XKF"
     assert outcome.skipped[0].page_number == 2
     assert outcome.skipped[0].reasons == ("condition not reported on search card",)
 
 
-def test_run_capture_stops_at_page_limit() -> None:
-    options = CaptureOptions(search_name="x", page_limit=1, page_delay_seconds=1)
+def test_run_capture_stops_at_movement_limit() -> None:
+    options = CaptureOptions(
+        search_name="x", movement_limit=1, movement_delay_seconds=1
+    )
     source = FakePageSource([make_page(make_card())])
 
-    outcome = run_capture(options, source, pace=no_pace)
+    outcome = run_capture(
+        options, source, bca_capture_strategy, hooks=CaptureHooks(pace=no_pace)
+    )
 
     assert outcome.stop_reason == StopReason.COMPLETED
-    assert len(outcome.cars) == 1
+    assert len(outcome.records) == 1
     assert len(outcome.pages) == 1
 
 
 def test_run_capture_deduplicates_keeping_latest_version() -> None:
-    options = CaptureOptions(search_name="x", page_limit=5, page_delay_seconds=1)
+    options = CaptureOptions(
+        search_name="x", movement_limit=5, movement_delay_seconds=1
+    )
     page_1 = make_page(make_card(CardSpec(lot_id="KS18 ZFM", cap_clean_price=7_800)))
     page_2 = make_page(make_card(CardSpec(lot_id="KS18 ZFM", cap_clean_price=6_900)))
     source = FakePageSource([page_1, page_2], advance_results=[True, False])
 
-    outcome = run_capture(options, source, pace=no_pace)
+    outcome = run_capture(
+        options, source, bca_capture_strategy, hooks=CaptureHooks(pace=no_pace)
+    )
 
-    assert len(outcome.cars) == 1
-    assert outcome.cars[0]["id"] == "KS18 ZFM"
-    assert outcome.cars[0]["cap_clean_price"] == 6_900
+    assert len(outcome.records) == 1
+    assert outcome.records[0]["id"] == "KS18 ZFM"
+    assert outcome.records[0]["cap_clean_price"] == 6_900
 
 
 def test_run_capture_halts_on_challenge_and_keeps_cars_so_far() -> None:
-    options = CaptureOptions(search_name="x", page_limit=5, page_delay_seconds=1)
+    options = CaptureOptions(
+        search_name="x", movement_limit=5, movement_delay_seconds=1
+    )
     challenge_page = "<html><title>Attention Required! | Cloudflare</title></html>"
     source = FakePageSource(
         [make_page(make_card()), challenge_page], advance_results=[True]
     )
 
-    outcome = run_capture(options, source, pace=no_pace)
+    outcome = run_capture(
+        options, source, bca_capture_strategy, hooks=CaptureHooks(pace=no_pace)
+    )
 
     assert outcome.stop_reason == StopReason.CHALLENGE_DETECTED
     assert outcome.stop_message is not None
-    assert len(outcome.cars) == 1
+    assert len(outcome.records) == 1
     assert len(outcome.pages) == 2
 
 
 def test_run_capture_stops_cleanly_on_login_redirect_from_source() -> None:
-    options = CaptureOptions(search_name="x", page_limit=5, page_delay_seconds=1)
+    options = CaptureOptions(
+        search_name="x", movement_limit=5, movement_delay_seconds=1
+    )
     source = FakePageSource(
         [make_page(make_card())], error_on_read=2, advance_results=[True]
     )
 
-    outcome = run_capture(options, source, pace=no_pace)
+    outcome = run_capture(
+        options, source, bca_capture_strategy, hooks=CaptureHooks(pace=no_pace)
+    )
 
     assert outcome.stop_reason == StopReason.CHALLENGE_DETECTED
     assert "session expired" in (outcome.stop_message or "")
-    assert len(outcome.cars) == 1
+    assert len(outcome.records) == 1
 
 
 def test_run_capture_accepts_custom_challenge_detector() -> None:
-    options = CaptureOptions(search_name="x", page_limit=1, page_delay_seconds=1)
+    options = CaptureOptions(
+        search_name="x", movement_limit=1, movement_delay_seconds=1
+    )
     source = FakePageSource([make_page(make_card())])
 
     outcome = run_capture(
         options,
         source,
-        pace=no_pace,
-        challenge_detector=lambda html: (
-            "custom block reason" if "MERCEDES-BENZ" in html else None
+        bca_capture_strategy,
+        hooks=CaptureHooks(
+            pace=no_pace,
+            challenge_detector=lambda html: (
+                "custom block reason" if "MERCEDES-BENZ" in html else None
+            ),
         ),
     )
 
@@ -415,8 +449,8 @@ def test_run_capture_accepts_custom_challenge_detector() -> None:
 def test_save_capture_writes_layout_and_manifest(tmp_path: Path) -> None:
     options = CaptureOptions(
         search_name="BMW A-Class",
-        page_limit=3,
-        page_delay_seconds=1,
+        movement_limit=3,
+        movement_delay_seconds=1,
         data_dir=tmp_path,
     )
     good_page = make_page(make_stub(), make_card())
@@ -427,7 +461,8 @@ def test_save_capture_writes_layout_and_manifest(tmp_path: Path) -> None:
     outcome = run_capture(
         options,
         FakePageSource([good_page, bad_page], advance_results=[True, False]),
-        pace=no_pace,
+        bca_capture_strategy,
+        hooks=CaptureHooks(pace=no_pace),
     )
 
     capture_dir = save_capture(outcome, options)
@@ -436,10 +471,10 @@ def test_save_capture_writes_layout_and_manifest(tmp_path: Path) -> None:
     assert manifest["capture_id"] == capture_dir.name
     assert manifest["source"] == "bca"
     assert manifest["search_name"] == "BMW A-Class"
-    assert manifest["page_limit"] == 3
+    assert manifest["movement_limit"] == 3
     assert manifest["pages_captured"] == 2
-    assert manifest["cars_captured"] == 1
-    assert manifest["cars_skipped"] == 1
+    assert manifest["records_captured"] == 1
+    assert manifest["records_skipped"] == 1
     assert manifest["stop_reason"] == "no_further_pages"
 
     assert (capture_dir / "pages" / "page_01.html").read_text(
@@ -449,21 +484,24 @@ def test_save_capture_writes_layout_and_manifest(tmp_path: Path) -> None:
         encoding="utf-8"
     ) == bad_page
 
-    cars = json.loads((capture_dir / "cars.json").read_text(encoding="utf-8"))
-    assert cars[0]["id"] == "KS18 ZFM"
+    records = json.loads((capture_dir / "records.json").read_text(encoding="utf-8"))
+    assert records[0]["id"] == "KS18 ZFM"
 
     skipped = json.loads((capture_dir / "skipped.json").read_text(encoding="utf-8"))
-    assert skipped[0]["lot_id"] == "GL70 XKF"
+    assert skipped[0]["record_id"] == "GL70 XKF"
     assert skipped[0]["page_number"] == 2
     assert skipped[0]["reasons"] == ["condition not reported on search card"]
 
 
 def test_save_capture_never_overwrites(tmp_path: Path) -> None:
     options = CaptureOptions(
-        search_name="x", page_limit=1, page_delay_seconds=1, data_dir=tmp_path
+        search_name="x", movement_limit=1, movement_delay_seconds=1, data_dir=tmp_path
     )
     outcome = run_capture(
-        options, FakePageSource([make_page(make_card())]), pace=no_pace
+        options,
+        FakePageSource([make_page(make_card())]),
+        bca_capture_strategy,
+        hooks=CaptureHooks(pace=no_pace),
     )
 
     first_dir = save_capture(outcome, options)
@@ -475,17 +513,20 @@ def test_save_capture_never_overwrites(tmp_path: Path) -> None:
     )
 
 
-def test_cars_json_round_trips_through_acquisition_seam(tmp_path: Path) -> None:
+def test_records_json_round_trips_through_acquisition_seam(tmp_path: Path) -> None:
     options = CaptureOptions(
-        search_name="x", page_limit=1, page_delay_seconds=1, data_dir=tmp_path
+        search_name="x", movement_limit=1, movement_delay_seconds=1, data_dir=tmp_path
     )
     outcome = run_capture(
-        options, FakePageSource([make_page(make_card())]), pace=no_pace
+        options,
+        FakePageSource([make_page(make_card())]),
+        bca_capture_strategy,
+        hooks=CaptureHooks(pace=no_pace),
     )
     capture_dir = save_capture(outcome, options)
 
-    cars = json.loads((capture_dir / "cars.json").read_text(encoding="utf-8"))
-    lots = BcaAcquisition().acquire(cars)
+    records = json.loads((capture_dir / "records.json").read_text(encoding="utf-8"))
+    lots = BcaAcquisition().acquire(records)
 
     assert len(lots) == 1
     assert lots[0].id.value == "KS18 ZFM"
@@ -497,20 +538,25 @@ def test_print_capture_summary_includes_zero_valid_case(
 ) -> None:
     options = CaptureOptions(
         search_name="empty search",
-        page_limit=1,
-        page_delay_seconds=1,
+        movement_limit=1,
+        movement_delay_seconds=1,
         data_dir=tmp_path,
     )
     bad_page = make_page(make_card(CardSpec(condition_block=False)))
-    outcome = run_capture(options, FakePageSource([bad_page]), pace=no_pace)
+    outcome = run_capture(
+        options,
+        FakePageSource([bad_page]),
+        bca_capture_strategy,
+        hooks=CaptureHooks(pace=no_pace),
+    )
     capture_dir = save_capture(outcome, options)
 
     print_capture_summary(outcome, capture_dir)
     output = capsys.readouterr().out
 
     assert "empty search" in output
-    assert "Valid cars     : 0" in output
-    assert "Skipped cars   : 1" in output
+    assert "Valid records  : 0" in output
+    assert "Skipped records: 1" in output
 
 
 def test_new_capture_ids_are_unique() -> None:
@@ -521,11 +567,14 @@ def test_new_capture_ids_are_unique() -> None:
 def test_capture_outcome_is_immutable_and_addressable() -> None:
     outcome = CaptureOutcome(
         search_name="x",
+        source=SourceKind.BCA,
         stop_reason=StopReason.COMPLETED,
         stop_message=None,
         pages=("<html></html>",),
-        cars=(),
-        skipped=(SkippedCar(lot_id="A", page_number=1, card_index=0, reasons=("r",)),),
+        records=(),
+        skipped=(
+            SkippedCar(record_id="A", page_number=1, card_index=0, reasons=("r",)),
+        ),
     )
     assert outcome.stop_reason == StopReason.COMPLETED
     assert outcome.skipped[0].reasons == ("r",)
