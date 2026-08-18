@@ -63,7 +63,7 @@ class BcaAcquisition:
 
 
 class AutoTraderRawIdentity(TypedDict, total=False):
-    """Raw Auto Trader identity fields; missing fields are rejected during parsing."""
+    """Raw Auto Trader identity fields; acquisition enforces domain completeness."""
 
     make: str
     model_variant: str
@@ -638,6 +638,280 @@ def validate_bca_observation(
     if observation.trim:
         record["trim"] = observation.trim
     return BcaValidationResult(record=record, reasons=())
+
+
+@dataclass(frozen=True, kw_only=True)
+class AutoTraderCardObservation:
+    """Every field visible on one Auto Trader search card; None means not observed.
+
+    Nothing here is invented: each attribute is populated only from content
+    present on the page, so validation can distinguish a missing field from a
+    fabricated default.
+    """
+
+    listing_id: str | None = None
+    make: str | None = None
+    model_variant: str | None = None
+    registration_year: int | None = None
+    fuel_type: str | None = None
+    transmission: str | None = None
+    body_style: str | None = None
+    door_count: int | None = None
+    mileage: int | None = None
+    cash_price: int | None = None
+    seller_type: str | None = None
+    trim: str | None = None
+
+
+def observe_autotrader_cards(
+    html_content: str,
+) -> tuple[AutoTraderCardObservation, ...]:
+    """Extract one observation per vehicle from an Auto Trader search results page.
+
+    Cards are recognised by the same DOM markers as the importer (advert-id
+    list items, search-listing test ids, and car-details links), but every
+    attribute is left ``None`` unless the page content shows it, so validation
+    can report each missing required field instead of inventing a value.
+    """
+    card_splits = re.split(r"<li [^>]*data-advertid=[\"\']\d+[\"\']", html_content)
+    if len(card_splits) <= 1:
+        card_splits = re.split(r'data-testid=["\']search-listing["\']', html_content)
+    if len(card_splits) <= 1:
+        card_splits = re.split(r'href=["\'][^"\']*/car-details/', html_content)
+    if len(card_splits) <= 1:
+        return ()
+
+    observations: list[AutoTraderCardObservation] = []
+    for chunk in card_splits[1:]:
+        observation = _observe_autotrader_card_chunk(chunk)
+        if observation is not None:
+            observations.append(observation)
+    return tuple(observations)
+
+
+def _observe_autotrader_card_chunk(
+    chunk: str,
+) -> AutoTraderCardObservation | None:
+    """Build an observation from one card chunk; None when the chunk is not a card."""
+    id_match = re.search(
+        r"(?:id=[\"\']|data-advertid=[\"\']|/car-details/)(\d{10,})", chunk
+    )
+    listing_id = id_match.group(1).strip() if id_match else None
+
+    title_match = re.search(
+        r"data-testid=[\"\']search-listing-title[\"\'][^>]*>([^<]+)", chunk
+    ) or re.search(r"<h3[^>]*>([^<]+)", chunk)
+    title = title_match.group(1).strip() if title_match else None
+
+    subtitle_match = re.search(
+        r"data-testid=[\"\']search-listing-subtitle[\"\'][^>]*>([^<]+)", chunk
+    )
+    subtitle = subtitle_match.group(1).strip() if subtitle_match else None
+
+    if listing_id is None and title is None and "£" not in chunk:
+        return None
+
+    make = model_variant = None
+    if title:
+        parts = title.split()
+        if parts:
+            make = parts[0]
+            model_variant = parts[1] if len(parts) > 1 else None
+
+    price_match = re.search(r"£([\d,]+)", chunk)
+    cash_price = int(price_match.group(1).replace(",", "")) if price_match else None
+
+    items = re.findall(r"<li[^>]*>([^<]+)</li>", chunk)
+
+    return AutoTraderCardObservation(
+        listing_id=listing_id,
+        make=make,
+        model_variant=model_variant,
+        registration_year=_observe_autotrader_registration_year(chunk, items),
+        fuel_type=_observe_autotrader_fuel_type(items, subtitle),
+        transmission=_observe_autotrader_transmission(items),
+        body_style=_observe_autotrader_body_style(title, subtitle),
+        door_count=_observe_autotrader_door_count(items),
+        mileage=_observe_autotrader_mileage(chunk, items),
+        cash_price=cash_price,
+        seller_type=_observe_autotrader_seller_type(chunk),
+        trim=subtitle,
+    )
+
+
+def _observe_autotrader_mileage(chunk: str, items: list[str]) -> int | None:
+    mileage_match = re.search(
+        r"data-testid=[\"\']mileage[\"\'][^>]*>([\d,]+)\s*miles",
+        chunk,
+        re.IGNORECASE,
+    )
+    if mileage_match:
+        return int(mileage_match.group(1).replace(",", ""))
+    for item in items:
+        mileage_match = re.search(r"([\d,]+)\s*miles", item, re.IGNORECASE)
+        if mileage_match:
+            return int(mileage_match.group(1).replace(",", ""))
+    return None
+
+
+def _observe_autotrader_registration_year(chunk: str, items: list[str]) -> int | None:
+    year_match = re.search(
+        r"data-testid=[\"\']registered_year[\"\'][^>]*>.*?\b(19\d\d|20\d\d)\b",
+        chunk,
+    )
+    if year_match:
+        return int(year_match.group(1))
+    for item in items:
+        if "reg" in item.lower() or "year" in item.lower():
+            year_match = re.search(r"\b(19\d\d|20\d\d)\b", item)
+            if year_match:
+                return int(year_match.group(1))
+    return None
+
+
+def _observe_autotrader_fuel_type(items: list[str], subtitle: str | None) -> str | None:
+    """Return the fuel type only when the card names one; never default it."""
+    text = " ".join(items) + " " + (subtitle or "")
+    lower = text.lower()
+    if re.search(r"\b(diesel|tdi)\b", lower):
+        return "Diesel"
+    if re.search(r"\b(hybrid|etsi|mhev|phev|gte|plug-in)\b", lower):
+        return "Hybrid"
+    if re.search(r"\b(electric|ev)\b", lower):
+        return "Electric"
+    if re.search(r"\bpetrol\b", lower):
+        return "Petrol"
+    return None
+
+
+def _observe_autotrader_transmission(items: list[str]) -> str | None:
+    """Return the transmission only when the card names one; never default it."""
+    for item in items:
+        lower = item.lower()
+        if lower == "manual" or lower.startswith(("auto", "cvt", "semi")):
+            return item
+    return None
+
+
+def _observe_autotrader_body_style(
+    title: str | None, subtitle: str | None
+) -> str | None:
+    """Return the body style only when the card names one; never default it."""
+    text = f"{title or ''} {subtitle or ''}".lower()
+    if re.search(r"\b(estate|touring|avant|sw)\b", text):
+        return "Estate"
+    if re.search(r"\b(saloon|sedan)\b", text):
+        return "Saloon"
+    if re.search(r"\b(suv|crossover|4x4)\b", text):
+        return "SUV"
+    if re.search(r"\bcoupe\b", text):
+        return "Coupe"
+    if re.search(r"\b(convertible|cabriolet)\b", text):
+        return "Convertible"
+    if re.search(r"\bhatchback\b", text):
+        return "Hatchback"
+    return None
+
+
+def _observe_autotrader_door_count(items: list[str]) -> int | None:
+    for item in items:
+        door_match = re.search(r"(\d+)\s*(?:dr|doors)", item, re.IGNORECASE)
+        if door_match:
+            return int(door_match.group(1))
+    return None
+
+
+def _observe_autotrader_seller_type(chunk: str) -> str | None:
+    """Return the Seller Type only when the card states one; never default it."""
+    lower = chunk.lower()
+    if "private seller" in lower:
+        return "private"
+    if "trade seller" in lower or "dealer" in lower:
+        return "dealer"
+    return None
+
+
+@dataclass(frozen=True)
+class AutoTraderValidationResult:
+    """Outcome of validating one observed Auto Trader card: record and every reason."""
+
+    record: AutoTraderRawRecord | None
+    reasons: tuple[str, ...]
+
+
+def validate_autotrader_observation(
+    observation: AutoTraderCardObservation,
+) -> AutoTraderValidationResult:
+    """Validate one observed Auto Trader card into a record plus every skip reason.
+
+    Missing or invalid capture-critical fields yield skip reasons. Fuel type,
+    transmission, body style, and door count are optional at this boundary:
+    when the card does not show them, the saved raw record preserves the
+    fields that were observed and leaves those fields absent. Acquisition
+    remains strict when converting raw records into domain listings.
+    """
+    reasons: list[str] = []
+
+    listing_id = _non_blank(observation.listing_id)
+    if listing_id is None:
+        reasons.append("missing listing id")
+    make = _non_blank(observation.make)
+    if make is None:
+        reasons.append("missing make")
+    model_variant = _non_blank(observation.model_variant)
+    if model_variant is None:
+        reasons.append("missing model variant")
+    fuel_type = _non_blank(observation.fuel_type)
+    transmission = _non_blank(observation.transmission)
+    body_style = _non_blank(observation.body_style)
+
+    if observation.registration_year is None:
+        reasons.append("missing registration year")
+    elif not 1886 <= observation.registration_year <= 9999:
+        reasons.append("invalid registration year")
+    if observation.door_count is not None and observation.door_count < 1:
+        reasons.append("invalid door count")
+    if observation.mileage is None:
+        reasons.append("missing mileage")
+    elif observation.mileage < 0:
+        reasons.append("invalid mileage")
+    if observation.cash_price is None:
+        reasons.append("missing Cash Price")
+    elif observation.cash_price < 0:
+        reasons.append("invalid Cash Price")
+    seller_type = _non_blank(observation.seller_type)
+    if seller_type is None:
+        reasons.append("missing Seller Type")
+    elif seller_type not in ("private", "dealer"):
+        reasons.append("invalid Seller Type")
+
+    if reasons:
+        return AutoTraderValidationResult(record=None, reasons=tuple(reasons))
+
+    identity: AutoTraderRawIdentity = {
+        "make": make,
+        "model_variant": model_variant,
+        "registration_year": observation.registration_year,
+    }
+    if fuel_type is not None:
+        identity["fuel_type"] = fuel_type
+    if transmission is not None:
+        identity["transmission"] = transmission
+    if body_style is not None:
+        identity["body_style"] = body_style
+    if observation.door_count is not None:
+        identity["door_count"] = observation.door_count
+
+    record: AutoTraderRawRecord = {
+        "id": listing_id,
+        "identity": identity,
+        "mileage": observation.mileage,
+        "cash_price": observation.cash_price,
+        "seller_type": seller_type,
+    }
+    if observation.trim:
+        record["trim"] = observation.trim
+    return AutoTraderValidationResult(record=record, reasons=())
 
 
 def _extract_bca_records_from_json_string(script_json: str) -> list[BcaRawRecord]:

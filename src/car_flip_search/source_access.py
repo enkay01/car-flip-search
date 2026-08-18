@@ -101,7 +101,10 @@ def assess_auto_trader_access(
             mechanism="Manual market snapshot feed (JSON/CSV)",
             usage_constraints="No consumer website scraping or CAPTCHA bypass permitted",
             rate_limit_policy="Max 5 req/s when API enabled; N/A for manual import",
-            reason="Automated Auto Trader access requires Connect API credentials; falling back to supported manual import",
+            reason=(
+                "Automated Auto Trader access requires Connect API credentials; "
+                "falling back to supported user-assisted capture or manual import"
+            ),
         )
     return SourceAccessDecision(
         source_name="Auto Trader",
@@ -110,6 +113,28 @@ def assess_auto_trader_access(
         usage_constraints="Live UK Cash Price listings only; no consumer scraping or anti-bot bypass",
         rate_limit_policy="Rate limited to 5 req/s, max concurrency = 1, Retry-After backoff",
         reason="Permitted account-backed Connect API credentials provided",
+    )
+
+
+def assess_auto_trader_capture_access() -> SourceAccessDecision:
+    """Describe the unauthenticated Auto Trader capture mechanism (issue #9)."""
+    return SourceAccessDecision(
+        source_name="Auto Trader",
+        status=AccessStatus.PERMITTED_USER_ASSISTED,
+        mechanism=(
+            "User-assisted unauthenticated headed browser capture "
+            "(tools/autotrader_headed_fetch.py)"
+        ),
+        usage_constraints=(
+            "Fresh visible browser session per run; the user performs one search "
+            "with no login; the tool never requires or stores Auto Trader "
+            "credentials; no CAPTCHA or anti-bot bypass"
+        ),
+        rate_limit_policy="Configurable movement delay (default 60s); result limit default 5",
+        reason=(
+            "Auto Trader does not require login for this workflow; the capture "
+            "uses the user's own search in a visible browser"
+        ),
     )
 
 
