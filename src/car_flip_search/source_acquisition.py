@@ -63,7 +63,7 @@ class BcaAcquisition:
 
 
 class AutoTraderRawIdentity(TypedDict, total=False):
-    """Raw Auto Trader identity fields; missing fields are rejected during parsing."""
+    """Raw Auto Trader identity fields; acquisition enforces domain completeness."""
 
     make: str
     model_variant: str
@@ -844,8 +844,11 @@ def validate_autotrader_observation(
 ) -> AutoTraderValidationResult:
     """Validate one observed Auto Trader card into a record plus every skip reason.
 
-    Missing or invalid required fields yield skip reasons; the tool never
-    invents vehicle identity, mileage, Cash Price, or Seller Type values.
+    Missing or invalid capture-critical fields yield skip reasons. Fuel type,
+    transmission, body style, and door count are optional at this boundary:
+    when the card does not show them, the saved raw record preserves the
+    fields that were observed and leaves those fields absent. Acquisition
+    remains strict when converting raw records into domain listings.
     """
     reasons: list[str] = []
 
@@ -859,22 +862,14 @@ def validate_autotrader_observation(
     if model_variant is None:
         reasons.append("missing model variant")
     fuel_type = _non_blank(observation.fuel_type)
-    if fuel_type is None:
-        reasons.append("missing fuel type")
     transmission = _non_blank(observation.transmission)
-    if transmission is None:
-        reasons.append("missing transmission")
     body_style = _non_blank(observation.body_style)
-    if body_style is None:
-        reasons.append("missing body style")
 
     if observation.registration_year is None:
         reasons.append("missing registration year")
     elif not 1886 <= observation.registration_year <= 9999:
         reasons.append("invalid registration year")
-    if observation.door_count is None:
-        reasons.append("missing door count")
-    elif observation.door_count < 1:
+    if observation.door_count is not None and observation.door_count < 1:
         reasons.append("invalid door count")
     if observation.mileage is None:
         reasons.append("missing mileage")
@@ -893,17 +888,23 @@ def validate_autotrader_observation(
     if reasons:
         return AutoTraderValidationResult(record=None, reasons=tuple(reasons))
 
+    identity: AutoTraderRawIdentity = {
+        "make": make,
+        "model_variant": model_variant,
+        "registration_year": observation.registration_year,
+    }
+    if fuel_type is not None:
+        identity["fuel_type"] = fuel_type
+    if transmission is not None:
+        identity["transmission"] = transmission
+    if body_style is not None:
+        identity["body_style"] = body_style
+    if observation.door_count is not None:
+        identity["door_count"] = observation.door_count
+
     record: AutoTraderRawRecord = {
         "id": listing_id,
-        "identity": {
-            "make": make,
-            "model_variant": model_variant,
-            "registration_year": observation.registration_year,
-            "fuel_type": fuel_type,
-            "transmission": transmission,
-            "body_style": body_style,
-            "door_count": observation.door_count,
-        },
+        "identity": identity,
         "mileage": observation.mileage,
         "cash_price": observation.cash_price,
         "seller_type": seller_type,

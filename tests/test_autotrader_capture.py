@@ -171,6 +171,29 @@ def test_observation_never_invents_unstated_fields() -> None:
     assert observation.registration_year is None
 
 
+def test_validation_saves_record_when_optional_identity_is_unobserved() -> None:
+    card = make_listing_card(
+        ListingSpec(
+            title="Mercedes-Benz A Class",
+            subtitle="1.3 A200 AMG Line 7G-DCT Euro 6 (s/s) 5dr",
+            fuel=None,
+            transmission=None,
+            doors=None,
+        )
+    )
+
+    observation = observe_autotrader_cards(make_page(card))[0]
+    result = validate_autotrader_observation(observation)
+
+    assert result.reasons == ()
+    assert result.record is not None
+    assert result.record["identity"] == {
+        "make": "Mercedes-Benz",
+        "model_variant": "A",
+        "registration_year": 2016,
+    }
+
+
 def test_validation_lists_every_reason_for_a_bad_card() -> None:
     card = make_listing_card(
         ListingSpec(
@@ -188,10 +211,7 @@ def test_validation_lists_every_reason_for_a_bad_card() -> None:
     result = validate_autotrader_observation(observations[0])
     assert result.record is None
     assert result.reasons == (
-        "missing fuel type",
-        "missing transmission",
         "missing registration year",
-        "missing door count",
         "missing mileage",
         "missing Cash Price",
         "missing Seller Type",
@@ -204,9 +224,6 @@ def test_validation_reports_each_missing_field() -> None:
         (ListingSpec(price=None), "missing Cash Price"),
         (ListingSpec(mileage=None), "missing mileage"),
         (ListingSpec(year=None), "missing registration year"),
-        (ListingSpec(fuel=None), "missing fuel type"),
-        (ListingSpec(transmission=None), "missing transmission"),
-        (ListingSpec(doors=None), "missing door count"),
         (ListingSpec(seller=None), "missing Seller Type"),
     ]
     for spec, expected_reason in cases:
