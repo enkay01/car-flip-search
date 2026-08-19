@@ -206,6 +206,10 @@ class ComparableEvidence:
 @dataclass(frozen=True)
 class NoComparableEvidence:
     @property
+    def market_comparables(self) -> tuple[MarketComparable, ...]:
+        return ()
+
+    @property
     def comparable_supply(self) -> int:
         return 0
 
@@ -285,6 +289,10 @@ class RetailFloorEvidence:
 
 @dataclass(frozen=True)
 class NoRetailFloorEvidence:
+    @property
+    def high_mileage_references(self) -> tuple[HighMileageReference, ...]:
+        return ()
+
     @property
     def retail_floor(self) -> "NoRetailFloorEvidence":
         return self

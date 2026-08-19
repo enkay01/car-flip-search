@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Buying opportunities · Car Flip Search</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+    <header class="site-header">
+        <div>
+            <p class="eyebrow">Car Flip Search</p>
+            <h1>Buying opportunities</h1>
+            <p class="lede">Review the valuation signals from your latest BCA and Auto Trader Captures.</p>
+        </div>
+        <div class="header-status">
+            <span class="status-label">Capture Pair</span>
+            <strong>{{ page.selected_pair_label }}</strong>
+            <span class="muted">Local dashboard</span>
+        </div>
+    </header>
+
+    <main class="page-shell">
+        {% if page.notices %}
+            <section class="notice-stack" aria-label="Dashboard notices">
+                {% for notice in page.notices %}
+                    <div class="notice notice-info">{{ notice }}</div>
+                {% endfor %}
+            </section>
+        {% endif %}
+
+        <section class="panel capture-panel">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">Input</p>
+                    <h2>Capture Pair</h2>
+                </div>
+                <p class="muted">The dashboard rereads saved Captures on each request.</p>
+            </div>
+
+            <form class="pair-form" method="get" action="{{ url_for('dashboard') }}">
+                <div class="capture-picker">
+                    <label for="bca-capture">BCA</label>
+                    <select id="bca-capture" name="bca_capture_id">
+                        <option value="">Newest usable Capture</option>
+                        {% for capture in page.bca_inventory.captures %}
+                            <option value="{{ capture.capture_id }}" {% if page.bca_capture_id == capture.capture_id %}selected{% endif %}>
+                                {{ capture.capture_id }} · {{ capture.manifest.search_name }} · {{ capture.manifest.saved_at_local }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                    <span class="capture-status">{{ page.bca_inventory.status_label }}</span>
+                </div>
+                <div class="capture-picker">
+                    <label for="autotrader-capture">Auto Trader</label>
+                    <select id="autotrader-capture" name="autotrader_capture_id">
+                        <option value="">Newest usable Capture</option>
+                        {% for capture in page.autotrader_inventory.captures %}
+                            <option value="{{ capture.capture_id }}" {% if page.autotrader_capture_id == capture.capture_id %}selected{% endif %}>
+                                {{ capture.capture_id }} · {{ capture.manifest.search_name }} · {{ capture.manifest.saved_at_local }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                    <span class="capture-status">{{ page.autotrader_inventory.status_label }}</span>
+                </div>
+                <input type="hidden" name="q" value="{{ page.search_query }}">
+                <input type="hidden" name="sort" value="{{ page.sort_field.value }}">
+                <input type="hidden" name="direction" value="{{ 'desc' if page.descending else 'asc' }}">
+                <button class="button button-primary" type="submit">Load pair</button>
+            </form>
+
+            <div class="capture-details">
+                {% for capture in (page.bca_capture, page.autotrader_capture) if capture %}
+                    <details>
+                        <summary>{{ 'BCA' if capture.source.value == 'bca' else 'Auto Trader' }} · {{ capture.manifest.status_label }}</summary>
+                        <dl class="metadata-list">
+                            <div><dt>Search Name</dt><dd>{{ capture.manifest.search_name }}</dd></div>
+                            <div><dt>Saved</dt><dd>{{ capture.manifest.saved_at_local }}</dd></div>
+                            <div><dt>Capture ID</dt><dd>{{ capture.capture_id }}</dd></div>
+                            <div><dt>Records</dt><dd>{{ capture.valid_count }} valid · {{ capture.manifest.records_skipped }} skipped</dd></div>
+                            <div><dt>Pages</dt><dd>{{ capture.manifest.pages_captured }}</dd></div>
+                            {% if capture.manifest.movement_limit is not none %}
+                                <div><dt>Movement limit</dt><dd>{{ capture.manifest.movement_limit }}</dd></div>
+                            {% endif %}
+                            {% if capture.manifest.movement_delay_seconds is not none %}
+                                <div><dt>Movement delay</dt><dd>{{ capture.manifest.movement_delay_seconds }} seconds</dd></div>
+                            {% endif %}
+                        </dl>
+                    </details>
+                {% endfor %}
+            </div>
+
+            {% for inventory in (page.bca_inventory, page.autotrader_inventory) %}
+                {% if inventory.problems %}
+                    <div class="capture-problems">
+                        <strong>{{ inventory.source_label }} Captures not available</strong>
+                        <ul>
+                            {% for problem in inventory.problems %}
+                                <li>{{ problem.capture_id }}: {{ problem.reason }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                {% endif %}
+            {% endfor %}
+        </section>
+
+        {% if page.search_name_warning %}
+            <div class="notice notice-warning">{{ page.search_name_warning }} The pair is still usable.</div>
+        {% endif %}
+
+        {% if not page.has_pair %}
+            <section class="panel empty-state">
+                <p class="eyebrow">Waiting for input</p>
+                <h2>No usable Capture Pair</h2>
+                <p>Select or save one usable BCA Capture and one usable Auto Trader Capture. Empty or stopped Captures remain selectable when their saved files are readable.</p>
+            </section>
+        {% else %}
+            <section class="panel opportunity-panel">
+                <div class="section-heading opportunity-heading">
+                    <div>
+                        <p class="eyebrow">Opportunity List</p>
+                        <h2>{{ page.result_count_label }}</h2>
+                    </div>
+                    <p class="muted">Spreads are valuation signals, not profit estimates.</p>
+                </div>
+
+                <form class="toolbar" method="get" action="{{ url_for('dashboard') }}">
+                    <input type="hidden" name="bca_capture_id" value="{{ page.bca_capture_id }}">
+                    <input type="hidden" name="autotrader_capture_id" value="{{ page.autotrader_capture_id }}">
+                    <label class="search-field" for="vehicle-search">
+                        <span>Search vehicles</span>
+                        <input id="vehicle-search" name="q" value="{{ page.search_query }}" placeholder="Make, model, registration, or lot ID" autocomplete="off">
+                    </label>
+                    <button class="button button-secondary" type="submit">Search</button>
+                    {% if page.search_query %}
+                        <a class="text-link" href="{{ url_for('dashboard', bca_capture_id=page.bca_capture_id, autotrader_capture_id=page.autotrader_capture_id) }}">Clear</a>
+                    {% endif %}
+                    <span class="live-count" data-live-count>{{ page.result_count_label }}</span>
+                </form>
+
+                {% if page.candidates %}
+                    <div class="table-wrap">
+                        <table class="opportunity-table" data-opportunity-table>
+                            <thead>
+                                <tr>
+                                    <th scope="col">Vehicle</th>
+                                    <th scope="col"><a href="{{ url_for('dashboard', bca_capture_id=page.bca_capture_id, autotrader_capture_id=page.autotrader_capture_id, q=page.search_query, sort='mileage', direction=page.direction_for('mileage')) }}">Mileage{% if page.sort_field.value == 'mileage' %} {{ '↓' if page.descending else '↑' }}{% endif %}</a></th>
+                                    <th scope="col"><a href="{{ url_for('dashboard', bca_capture_id=page.bca_capture_id, autotrader_capture_id=page.autotrader_capture_id, q=page.search_query, sort='cap_clean_price', direction=page.direction_for('cap_clean_price')) }}">CAP Clean Price{% if page.sort_field.value == 'cap_clean_price' %} {{ '↓' if page.descending else '↑' }}{% endif %}</a></th>
+                                    <th scope="col">Retail Floor</th>
+                                    <th scope="col"><a href="{{ url_for('dashboard', bca_capture_id=page.bca_capture_id, autotrader_capture_id=page.autotrader_capture_id, q=page.search_query, sort='retail_floor_spread', direction=page.direction_for('retail_floor_spread')) }}">Retail-Floor Spread{% if page.sort_field.value == 'retail_floor_spread' %} {{ '↓' if page.descending else '↑' }}{% endif %}</a></th>
+                                    <th scope="col"><a href="{{ url_for('dashboard', bca_capture_id=page.bca_capture_id, autotrader_capture_id=page.autotrader_capture_id, q=page.search_query, sort='price_spread', direction=page.direction_for('price_spread')) }}">Price Spread{% if page.sort_field.value == 'price_spread' %} {{ '↓' if page.descending else '↑' }}{% endif %}</a></th>
+                                    <th scope="col"><a href="{{ url_for('dashboard', bca_capture_id=page.bca_capture_id, autotrader_capture_id=page.autotrader_capture_id, q=page.search_query, sort='comparable_supply', direction=page.direction_for('comparable_supply')) }}">Comparable Supply{% if page.sort_field.value == 'comparable_supply' %} {{ '↓' if page.descending else '↑' }}{% endif %}</a></th>
+                                    <th scope="col">BCA Source Link</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for candidate in page.candidates %}
+                                    <tr class="opportunity-row" data-search-text="{{ candidate.search_text }}">
+                                        <td>
+                                            <button class="row-toggle" type="button" data-detail-toggle="{{ candidate.detail_key }}" aria-expanded="false">
+                                                <span class="toggle-icon" aria-hidden="true">+</span>
+                                                <span>
+                                                    <strong>{{ candidate.vehicle_name }}</strong>
+                                                    <small>{{ candidate.identity_label }}</small>
+                                                </span>
+                                            </button>
+                                        </td>
+                                        <td class="numeric">{{ candidate.mileage_label }}</td>
+                                        <td class="numeric">{{ candidate.cap_clean_price_label }}</td>
+                                        <td class="numeric">{{ candidate.retail_floor_label }}</td>
+                                        <td class="numeric signal">{{ candidate.retail_floor_spread_label }}</td>
+                                        <td class="numeric signal">{{ candidate.price_spread_label }}</td>
+                                        <td class="numeric">{{ candidate.comparable_supply }}</td>
+                                        <td>
+                                            {% if candidate.source_url %}
+                                                <a class="source-link" href="{{ candidate.source_url }}" target="_blank" rel="noreferrer">Open</a>
+                                            {% else %}
+                                                <span class="muted">No Source Link</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    <tr class="detail-row" id="{{ candidate.detail_key }}" hidden>
+                                        <td colspan="8">
+                                            <div class="detail-panel">
+                                                <div class="detail-heading">
+                                                    <div>
+                                                        <p class="eyebrow">Candidate Vehicle</p>
+                                                        <h3>{{ candidate.detail_identity_label }}</h3>
+                                                    </div>
+                                                    <div class="detail-actions">
+                                                        {% if candidate.source_url %}
+                                                            <a class="button button-secondary" href="{{ candidate.source_url }}" target="_blank" rel="noreferrer">Open Auction Lot</a>
+                                                        {% endif %}
+                                                    </div>
+                                                </div>
+                                                <div class="evidence-grid">
+                                                    <section class="evidence-section">
+                                                        <div class="evidence-heading">
+                                                            <h4>Market Comparables</h4>
+                                                            <span class="count-badge">{{ candidate.market_comparables|length }}</span>
+                                                        </div>
+                                                        {% if candidate.market_comparables %}
+                                                            <div class="evidence-list">
+                                                                {% for listing in candidate.market_comparables %}
+                                                                    <div class="evidence-card {% if listing.is_cheapest %}evidence-highlight{% endif %}">
+                                                                        <div>
+                                                                            <strong>{{ listing.identity_label }}</strong>
+                                                                            <span class="evidence-meta">{{ listing.mileage_label }} · {{ listing.seller_type|capitalize }}</span>
+                                                                        </div>
+                                                                        <div class="evidence-price">
+                                                                            <strong>{{ listing.price_label }}</strong>
+                                                                            {% if listing.is_cheapest %}<span class="tag">Cheapest</span>{% endif %}
+                                                                            {% if listing.source_url %}<a href="{{ listing.source_url }}" target="_blank" rel="noreferrer">Open</a>{% else %}<span class="muted">No Source Link</span>{% endif %}
+                                                                        </div>
+                                                                    </div>
+                                                                {% endfor %}
+                                                            </div>
+                                                        {% else %}
+                                                            <p class="muted">No Market Comparables.</p>
+                                                        {% endif %}
+                                                    </section>
+                                                    <section class="evidence-section">
+                                                        <div class="evidence-heading">
+                                                            <h4>High-Mileage References</h4>
+                                                            <span class="count-badge">{{ candidate.high_mileage_references|length }}</span>
+                                                        </div>
+                                                        {% if candidate.high_mileage_references %}
+                                                            <div class="evidence-list">
+                                                                {% for listing in candidate.high_mileage_references %}
+                                                                    <div class="evidence-card {% if listing.sets_retail_floor %}evidence-highlight{% endif %}">
+                                                                        <div>
+                                                                            <strong>{{ listing.identity_label }}</strong>
+                                                                            <span class="evidence-meta">{{ listing.mileage_label }} · {{ listing.seller_type|capitalize }}</span>
+                                                                        </div>
+                                                                        <div class="evidence-price">
+                                                                            <strong>{{ listing.price_label }}</strong>
+                                                                            {% if listing.sets_retail_floor %}<span class="tag">Sets Retail Floor</span>{% endif %}
+                                                                            {% if listing.source_url %}<a href="{{ listing.source_url }}" target="_blank" rel="noreferrer">Open</a>{% else %}<span class="muted">No Source Link</span>{% endif %}
+                                                                        </div>
+                                                                    </div>
+                                                                {% endfor %}
+                                                            </div>
+                                                        {% else %}
+                                                            <p class="muted">No High-Mileage References. Retail Floor is unavailable.</p>
+                                                        {% endif %}
+                                                    </section>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="empty-state compact">
+                        <h3>No Candidate Vehicles in this pair</h3>
+                        <p>The Capture Pair is readable, but the Opportunity Search produced no strict candidates.</p>
+                    </div>
+                {% endif %}
+            </section>
+        {% endif %}
+    </main>
+
+    <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>

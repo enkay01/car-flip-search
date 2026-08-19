@@ -50,6 +50,27 @@ the same layout: original page data, valid parsed records, and a skipped-car
 log. Cars are deduplicated by Auto Trader listing ID, keeping the latest
 version. A capture that stops early is still saved and usable.
 
+## Opportunity dashboard
+
+After both captures are saved, start the local dashboard:
+
+```bash
+uv run dev
+```
+
+`uv run dashboard` is an alias. The app binds to `127.0.0.1:5000`, opens a
+browser tab, and reads `data/captures/`. Use `--no-browser`, `--port`, or
+`--data-root` when needed:
+
+```bash
+uv run dev --no-browser --port 5050 --data-root /path/to/captures
+```
+
+The dashboard defaults to the newest usable BCA and Auto Trader Captures. It
+keeps an explicitly selected Capture Pair in the URL, shows all strict
+Candidate Vehicles, and opens source pages in separate tabs for inspection.
+Watchlisting remains on BCA.
+
 ## Development
 
 ```bash

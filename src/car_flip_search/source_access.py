@@ -432,6 +432,8 @@ def _parse_autotrader_payload(raw_json: str) -> AutoTraderRawRecord | None:
         }
         if "trim" in data and data["trim"] is not None:
             record["trim"] = str(data["trim"])
+        if "source_url" in data and data["source_url"] is not None:
+            record["source_url"] = str(data["source_url"])
         return record
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None

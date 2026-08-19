@@ -158,6 +158,9 @@ class CaptureStrategy[T_Observation, T_Record](Protocol):
     def record_id(self, record: T_Record) -> str:
         """Return the source ID used to deduplicate records."""
 
+    def merge_records(self, previous: T_Record | None, current: T_Record) -> T_Record:
+        """Merge a newer record with an earlier observation of the same ID."""
+
 
 @dataclass(frozen=True)
 class _BcaCaptureStrategy:
@@ -181,6 +184,15 @@ class _BcaCaptureStrategy:
 
     def record_id(self, record: BcaRawRecord) -> str:
         return record["id"]
+
+    def merge_records(
+        self, previous: BcaRawRecord | None, current: BcaRawRecord
+    ) -> BcaRawRecord:
+        if previous is not None and "source_url" not in current:
+            source_url = previous.get("source_url")
+            if source_url is not None:
+                current["source_url"] = source_url
+        return current
 
 
 bca_capture_strategy: CaptureStrategy[BcaCardObservation, BcaRawRecord] = (
@@ -210,6 +222,15 @@ class _AutoTraderCaptureStrategy:
 
     def record_id(self, record: AutoTraderRawRecord) -> str:
         return record["id"]
+
+    def merge_records(
+        self, previous: AutoTraderRawRecord | None, current: AutoTraderRawRecord
+    ) -> AutoTraderRawRecord:
+        if previous is not None and "source_url" not in current:
+            source_url = previous.get("source_url")
+            if source_url is not None:
+                current["source_url"] = source_url
+        return current
 
 
 autotrader_capture_strategy: CaptureStrategy[
@@ -268,7 +289,9 @@ def run_capture[T_Observation, T_Record](
             result = strategy.validate(observation)
             if result.record is not None:
                 record_id = strategy.record_id(result.record)
-                records[record_id] = result.record
+                records[record_id] = strategy.merge_records(
+                    records.get(record_id), result.record
+                )
                 observed_listing_ids.add(record_id)
             else:
                 observation_id = strategy.observation_id(observation)

@@ -102,11 +102,23 @@ _Avoid_: Monthly payment, finance price
 The complete set of Comparison-Eligible Candidates and their valuation signals. It has no minimum-spread eligibility threshold; the user filters and sorts it.
 _Avoid_: Shortlist, qualified deals
 
+**External Watchlist**:
+The watchlist on BCA where the user tracks Auction Lots they may consider. It sits outside Car Flip Search; the dashboard only helps the user reach the relevant Auction Lot.
+_Avoid_: App watchlist, local watchlist
+
+**Source Link**:
+The captured URL that opens the source page for an Auction Lot or Auto Trader Listing so the user can inspect it. It is optional inspection metadata and does not change domain identity or valuation evidence.
+_Avoid_: Derived link, source ID
+
 ## Capture
 
 **Capture**:
-A saved BCA search produced by one run of the BCA capture command, identified by its unique Capture ID and Search Name. It keeps the original page data, the valid parsed car records, and a skipped-car log.
+A saved result set from one run of a BCA or Auto Trader source capture, identified by its unique Capture ID and Search Name. It keeps the original page data, the valid parsed car records, and a skipped-car log.
 _Avoid_: Download, export, scrape
+
+**Capture Pair**:
+One BCA Capture and one Auto Trader Capture selected together to produce an Opportunity List. The pair is identified by both Capture IDs; their Search Names and saved times provide context but do not define a match.
+_Avoid_: Matched search, synchronized capture
 
 **Capture ID**:
 The unique identifier of a Capture, never reused or overwritten.

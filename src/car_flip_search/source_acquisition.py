@@ -6,8 +6,8 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import TypedDict
-from urllib.parse import unquote
+from typing import NamedTuple, TypedDict
+from urllib.parse import unquote, urljoin
 
 from .model import (
     AuctionLot,
@@ -45,6 +45,7 @@ class BcaRawRecord(TypedDict, total=False):
     write_off_reported: bool
     accident_damage_reported: bool
     trim: str
+    source_url: str
 
 
 class BcaAcquisition:
@@ -83,6 +84,7 @@ class AutoTraderRawRecord(TypedDict, total=False):
     cash_price: int
     seller_type: str
     trim: str
+    source_url: str
 
 
 class AutoTraderAcquisition:
@@ -324,6 +326,8 @@ class BcaCardObservation:
     write_off_reported: bool | None = None
     accident_damage_reported: bool | None = None
     trim: str | None = None
+    title_source_url: str | None = None
+    card_source_url: str | None = None
 
 
 _WRITE_OFF_MARKERS = (r"\bcat\s?[absn]\b", r"write-?off\b", r"written off")
@@ -349,6 +353,13 @@ _BCA_BODY_STYLE_ALIASES = {
 }
 
 
+class BcaTitle(NamedTuple):
+    make: str | None
+    model_variant: str | None
+    body_style: str | None
+    trim: str | None
+
+
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
@@ -358,6 +369,15 @@ def _non_blank(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _absolute_source_url(value: str | None, base_url: str) -> str | None:
+    clean_value = _non_blank(value)
+    return urljoin(base_url, clean_value) if clean_value is not None else None
+
+
+def _anchor_hrefs(chunk: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"<a\b[^>]*href=[\"']([^\"']+)", chunk))
 
 
 def observe_bca_cards(html_content: str) -> tuple[BcaCardObservation, ...]:
@@ -413,11 +433,24 @@ def _observe_bca_card_chunk(chunk: str) -> BcaCardObservation | None:
         r"VehicleResultCardDesktop__StyledLink[^\"]*\"[^>]*>([^<]+)</a>", chunk
     )
     title = title_match.group(1).strip() if title_match else None
+    title_href_match = re.search(
+        r"<a\b[^>]*class=[\"'][^\"']*VehicleResultCardDesktop__StyledLink[^\"']*[\"'][^>]*href=[\"']([^\"']+)",
+        chunk,
+    )
+    title_source_url = _absolute_source_url(
+        title_href_match.group(1) if title_href_match else None,
+        "https://www.bca.co.uk/",
+    )
+    anchor_hrefs = _anchor_hrefs(chunk)
+    card_source_url = _absolute_source_url(
+        anchor_hrefs[0] if anchor_hrefs else None,
+        "https://www.bca.co.uk/",
+    )
 
     cap_match = re.search(r"CAP Clean</p>\s*<p[^>]*>£([\d,]+)</p>", chunk)
     cap_clean_price = int(cap_match.group(1).replace(",", "")) if cap_match else None
 
-    make, model_variant, body_style, trim = _parse_bca_title(title)
+    parsed_title = _parse_bca_title(title)
 
     items = re.findall(r"<p [^>]*>([^<]+)</p>", chunk)
     fields = _observe_card_spec_fields(items)
@@ -425,25 +458,27 @@ def _observe_bca_card_chunk(chunk: str) -> BcaCardObservation | None:
     condition_block_present = 'data-testid="condition-report-icon"' in chunk
     return BcaCardObservation(
         lot_id=lot_id,
-        make=make,
-        model_variant=model_variant,
+        make=parsed_title.make,
+        model_variant=parsed_title.model_variant,
         registration_year=fields.get("registration_year"),
         fuel_type=fields.get("fuel_type"),
         transmission=fields.get("transmission"),
-        body_style=body_style,
+        body_style=parsed_title.body_style,
         door_count=fields.get("door_count"),
         mileage=fields.get("mileage"),
         cap_clean_price=cap_clean_price,
         clean_condition=True if condition_block_present else None,
         write_off_reported=_contains_any(chunk, _WRITE_OFF_MARKERS),
         accident_damage_reported=_contains_any(chunk, _ACCIDENT_DAMAGE_MARKERS),
-        trim=trim,
+        trim=parsed_title.trim,
+        title_source_url=title_source_url,
+        card_source_url=card_source_url,
     )
 
 
 def _parse_bca_title(
     title: str | None,
-) -> tuple[str | None, str | None, str | None, str | None]:
+) -> BcaTitle:
     """Parse identity only when the title has a known body-style suffix.
 
     BCA's rendered cards expose the vehicle title as plain text rather than
@@ -453,11 +488,11 @@ def _parse_bca_title(
     a recognized suffix remain incomplete and are rejected by validation.
     """
     if not title:
-        return None, None, None, None
+        return BcaTitle(None, None, None, None)
 
     parts = title.split()
     if not parts:
-        return None, None, None, None
+        return BcaTitle(None, None, None, None)
 
     make = parts[0]
     model_variant = parts[1] if len(parts) > 1 else None
@@ -479,7 +514,7 @@ def _parse_bca_title(
         if body_style is not None and body_style_start > 2
         else None
     )
-    return make, model_variant, body_style, trim
+    return BcaTitle(make, model_variant, body_style, trim)
 
 
 def _merge_bca_observations(
@@ -503,6 +538,8 @@ def _merge_bca_observations(
             left.accident_damage_reported or right.accident_damage_reported
         ),
         trim=left.trim or right.trim,
+        title_source_url=left.title_source_url or right.title_source_url,
+        card_source_url=left.card_source_url or right.card_source_url,
     )
 
 
@@ -637,6 +674,9 @@ def validate_bca_observation(
     }
     if observation.trim:
         record["trim"] = observation.trim
+    source_url = observation.title_source_url or observation.card_source_url
+    if source_url is not None:
+        record["source_url"] = source_url
     return BcaValidationResult(record=record, reasons=())
 
 
@@ -661,6 +701,7 @@ class AutoTraderCardObservation:
     cash_price: int | None = None
     seller_type: str | None = None
     trim: str | None = None
+    source_url: str | None = None
 
 
 def observe_autotrader_cards(
@@ -677,7 +718,7 @@ def observe_autotrader_cards(
     if len(card_splits) <= 1:
         card_splits = re.split(r'data-testid=["\']search-listing["\']', html_content)
     if len(card_splits) <= 1:
-        card_splits = re.split(r'href=["\'][^"\']*/car-details/', html_content)
+        card_splits = re.split(r'(?=href=["\'][^"\']*/car-details/)', html_content)
     if len(card_splits) <= 1:
         return ()
 
@@ -736,6 +777,18 @@ def _observe_autotrader_card_chunk(
         cash_price=cash_price,
         seller_type=_observe_autotrader_seller_type(chunk),
         trim=subtitle,
+        source_url=_autotrader_source_url(chunk),
+    )
+
+
+def _autotrader_source_url(chunk: str) -> str | None:
+    match = re.search(
+        r"href=[\"']([^\"']*/car-details/[^\"']+)",
+        chunk,
+    )
+    return _absolute_source_url(
+        match.group(1) if match else None,
+        "https://www.autotrader.co.uk/",
     )
 
 
@@ -911,6 +964,8 @@ def validate_autotrader_observation(
     }
     if observation.trim:
         record["trim"] = observation.trim
+    if observation.source_url is not None:
+        record["source_url"] = observation.source_url
     return AutoTraderValidationResult(record=record, reasons=())
 
 
@@ -952,6 +1007,9 @@ def _extract_bca_records_from_json_string(script_json: str) -> list[BcaRawRecord
             trim_val = current.get("trim") if hasattr(current, "get") else None
             if trim_val is not None:
                 record["trim"] = str(trim_val)
+            source_url = current.get("source_url") if hasattr(current, "get") else None
+            if source_url is not None:
+                record["source_url"] = str(source_url)
             records.append(record)
             continue
 
@@ -1037,7 +1095,7 @@ def _extract_autotrader_cards_from_html(
     if len(card_splits) <= 1:
         card_splits = re.split(r'data-testid=["\']search-listing["\']', html_content)
     if len(card_splits) <= 1:
-        card_splits = re.split(r'href=["\'][^"\']*/car-details/', html_content)
+        card_splits = re.split(r'(?=href=["\'][^"\']*/car-details/)', html_content)
     if len(card_splits) <= 1:
         return []
 
@@ -1099,6 +1157,9 @@ def _parse_single_autotrader_card(chunk: str) -> AutoTraderRawRecord | None:
         }
         if subtitle:
             record["trim"] = subtitle
+        source_url = _autotrader_source_url(chunk)
+        if source_url is not None:
+            record["source_url"] = source_url
         return record
     except (KeyError, TypeError, ValueError, IndexError):
         return None
@@ -1218,6 +1279,11 @@ def _extract_autotrader_records_from_json_string(
                 trim_val = current.get("trim") if hasattr(current, "get") else None
                 if trim_val is not None:
                     record["trim"] = str(trim_val)
+                source_url = (
+                    current.get("source_url") if hasattr(current, "get") else None
+                )
+                if source_url is not None:
+                    record["source_url"] = str(source_url)
                 records.append(record)
                 continue
 

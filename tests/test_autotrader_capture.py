@@ -133,6 +133,9 @@ def test_observe_autotrader_cards_returns_one_observation_per_listing() -> None:
     assert observation.cash_price == 8_995
     assert observation.seller_type == "dealer"
     assert observation.trim == "M Sport"
+    assert observation.source_url == (
+        "https://www.autotrader.co.uk/car-details/202603271072975"
+    )
 
 
 def test_validate_autotrader_observation_returns_record_when_complete() -> None:
@@ -144,6 +147,9 @@ def test_validate_autotrader_observation_returns_record_when_complete() -> None:
     assert result.record["id"] == "202603271072975"
     assert result.record["cash_price"] == 8_995
     assert result.record["seller_type"] == "dealer"
+    assert result.record["source_url"] == (
+        "https://www.autotrader.co.uk/car-details/202603271072975"
+    )
 
 
 def test_observation_never_invents_unstated_fields() -> None:

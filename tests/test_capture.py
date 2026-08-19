@@ -281,6 +281,22 @@ def test_validate_observation_returns_record_when_complete() -> None:
     assert result.record["id"] == "KS18 ZFM"
     assert result.record["cap_clean_price"] == 7_800
     assert result.record["clean_condition"] is True
+    assert result.record["source_url"] == "https://www.bca.co.uk/lot/KS18%20ZFM"
+
+
+def test_bca_source_link_prefers_title_link_over_card_link() -> None:
+    card = make_card(
+        CardSpec(title_href="https://www.bca.co.uk/lot/KS18%20ZFM?from=title")
+    )
+
+    result = validate_bca_observation(
+        observe_bca_cards(make_page(make_stub(), card))[0]
+    )
+
+    assert result.record is not None
+    assert result.record["source_url"] == (
+        "https://www.bca.co.uk/lot/KS18%20ZFM?from=title"
+    )
 
 
 def test_validation_lists_every_reason_for_a_bad_card() -> None:
