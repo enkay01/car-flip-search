@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import threading
 import webbrowser
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict, TypeGuard
 from urllib.parse import unquote, urljoin, urlparse
 
-from flask import Flask, render_template, request
+from flask import Flask, redirect, render_template, request, url_for
 
 from .capture import SourceKind
 from .model import (
@@ -132,10 +134,31 @@ class LoadedCapture:
         return len(self.raw_records)
 
     @property
+    def comparison_ready_count(self) -> int:
+        if self.source is SourceKind.BCA:
+            return len(self.auction_lots)
+        return len(self.listings)
+
+    @property
+    def data_quality_notice(self) -> str | None:
+        if self.source is not SourceKind.AUTOTRADER:
+            return None
+        excluded_count = self.valid_count - self.comparison_ready_count
+        if excluded_count <= 0:
+            return None
+        record_label = "record" if excluded_count == 1 else "records"
+        return (
+            f"Auto Trader Capture {self.capture_id} has {excluded_count} captured "
+            f"{record_label} without complete vehicle identity; they are excluded "
+            "from market evidence. The Capture remains usable."
+        )
+
+    @property
     def summary_label(self) -> str:
         return (
             f"{self.manifest.search_name} · {self.manifest.saved_at_local} · "
-            f"{self.valid_count} valid · {self.manifest.records_skipped} skipped"
+            f"{self.valid_count} captured · {self.comparison_ready_count} "
+            f"comparison-ready · {self.manifest.records_skipped} skipped"
         )
 
     def source_url_for(self, record_id: str) -> str | None:
@@ -185,6 +208,56 @@ class SourceInventory:
             (capture for capture in self.captures if capture.capture_id == capture_id),
             None,
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CaptureEntry:
+    """One saved Capture directory shown on the management page."""
+
+    source: SourceKind
+    capture_id: str
+    search_name: str | None
+    saved_at: datetime | None
+    records_captured: int | None
+    status_label: str
+    problem: str | None
+
+    @property
+    def source_label(self) -> str:
+        return _source_label(self.source)
+
+    @property
+    def selection_value(self) -> str:
+        return f"{self.source.value}:{self.capture_id}"
+
+    @property
+    def search_name_label(self) -> str:
+        return self.search_name or "Unavailable"
+
+    @property
+    def saved_at_label(self) -> str:
+        if self.saved_at is None:
+            return "Unavailable"
+        return self.saved_at.astimezone().strftime("%d %b %Y, %H:%M %Z")
+
+    @property
+    def records_label(self) -> str:
+        if self.records_captured is None:
+            return "Unavailable"
+        return f"{self.records_captured} captured"
+
+
+@dataclass(frozen=True, kw_only=True)
+class CaptureManagementPage:
+    entries: tuple[CaptureEntry, ...]
+    deleted_count: int = 0
+    skipped_count: int = 0
+
+
+@dataclass(frozen=True, kw_only=True)
+class CaptureDeletionResult:
+    deleted_count: int
+    skipped_count: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -376,6 +449,30 @@ def create_app(data_root: str | Path = DEFAULT_DATA_ROOT) -> Flask:
         )
         return render_template("dashboard.html", page=page)
 
+    @app.get("/captures")
+    def capture_manager() -> str:
+        return render_template(
+            "captures.html",
+            page=build_capture_management_page(
+                Path(app.config["DATA_ROOT"]),
+                deleted_count=request.args.get("deleted", default=0, type=int),
+                skipped_count=request.args.get("skipped", default=0, type=int),
+            ),
+        )
+
+    @app.post("/captures/delete")
+    def delete_capture_selections() -> str:
+        result = delete_captures(
+            Path(app.config["DATA_ROOT"]), request.form.getlist("capture")
+        )
+        return redirect(
+            url_for(
+                "capture_manager",
+                deleted=result.deleted_count,
+                skipped=result.skipped_count,
+            )
+        )
+
     return app
 
 
@@ -392,7 +489,7 @@ def build_dashboard_page(request_data: DashboardRequest) -> DashboardPage:
         request_data.autotrader_capture_id,
         "Auto Trader",
     )
-    notices = tuple(
+    selection_notices = tuple(
         notice
         for notice in (bca_selection.notice, autotrader_selection.notice)
         if notice is not None
@@ -400,6 +497,14 @@ def build_dashboard_page(request_data: DashboardRequest) -> DashboardPage:
 
     bca_capture = bca_selection.capture
     autotrader_capture = autotrader_selection.capture
+    capture_notices = tuple(
+        notice
+        for capture in (bca_capture, autotrader_capture)
+        if capture is not None
+        for notice in (capture.data_quality_notice,)
+        if notice is not None
+    )
+    notices = selection_notices + capture_notices
 
     search_name_warning: str | None = None
     candidates: tuple[CandidateView, ...] = ()
@@ -452,6 +557,132 @@ def build_dashboard_page(request_data: DashboardRequest) -> DashboardPage:
         sort_field=parsed_sort_field,
         descending=descending,
     )
+
+
+def build_capture_management_page(
+    data_root: Path, *, deleted_count: int = 0, skipped_count: int = 0
+) -> CaptureManagementPage:
+    """List every saved Capture directory, including unreadable Captures."""
+    entries: list[CaptureEntry] = []
+    for source in (SourceKind.BCA, SourceKind.AUTOTRADER):
+        source_directory = data_root / source.value
+        if not source_directory.is_dir():
+            continue
+        try:
+            capture_paths = sorted(
+                path
+                for path in source_directory.iterdir()
+                if path.is_dir() and not path.is_symlink()
+            )
+        except OSError:
+            continue
+        entries.extend(_capture_entry(path, source) for path in capture_paths)
+
+    entries.sort(
+        key=lambda entry: (
+            entry.saved_at is not None,
+            entry.saved_at or datetime.min.replace(tzinfo=UTC),
+            entry.source.value,
+            entry.capture_id,
+        ),
+        reverse=True,
+    )
+    return CaptureManagementPage(
+        entries=tuple(entries),
+        deleted_count=max(deleted_count, 0),
+        skipped_count=max(skipped_count, 0),
+    )
+
+
+def delete_captures(
+    data_root: Path, selections: Sequence[str]
+) -> CaptureDeletionResult:
+    """Delete only selected Capture directories inside the configured data root."""
+    deleted_count = 0
+    skipped_count = 0
+    seen: set[str] = set()
+    for selection in selections:
+        if selection in seen:
+            continue
+        seen.add(selection)
+        parsed_selection = _parse_capture_selection(selection)
+        if parsed_selection is None:
+            skipped_count += 1
+            continue
+        source, capture_id = parsed_selection
+        capture_path = _safe_capture_path(data_root, source, capture_id)
+        if (
+            capture_path is None
+            or not capture_path.is_dir()
+            or capture_path.is_symlink()
+        ):
+            skipped_count += 1
+            continue
+        try:
+            shutil.rmtree(capture_path)
+        except OSError:
+            skipped_count += 1
+        else:
+            deleted_count += 1
+    return CaptureDeletionResult(
+        deleted_count=deleted_count,
+        skipped_count=skipped_count,
+    )
+
+
+def _capture_entry(capture_path: Path, source: SourceKind) -> CaptureEntry:
+    try:
+        manifest_data = _read_json_object(capture_path / "manifest.json", "manifest")
+        manifest = _parse_manifest(manifest_data, capture_path.name, source)
+    except CaptureLoadError as error:
+        return CaptureEntry(
+            source=source,
+            capture_id=capture_path.name,
+            search_name=None,
+            saved_at=None,
+            records_captured=None,
+            status_label="Unavailable",
+            problem=str(error),
+        )
+    return CaptureEntry(
+        source=source,
+        capture_id=capture_path.name,
+        search_name=manifest.search_name,
+        saved_at=manifest.saved_at,
+        records_captured=manifest.records_captured,
+        status_label=manifest.status_label,
+        problem=None,
+    )
+
+
+def _parse_capture_selection(value: str) -> tuple[SourceKind, str] | None:
+    source_value, separator, capture_id = value.partition(":")
+    if not separator or not capture_id or "/" in capture_id or "\\" in capture_id:
+        return None
+    try:
+        source = SourceKind(source_value)
+    except ValueError:
+        return None
+    if capture_id in {".", ".."} or capture_id.strip() != capture_id:
+        return None
+    return source, capture_id
+
+
+def _safe_capture_path(
+    data_root: Path, source: SourceKind, capture_id: str
+) -> Path | None:
+    source_directory = data_root / source.value
+    capture_path = source_directory / capture_id
+    try:
+        if source_directory.is_symlink():
+            return None
+        if capture_path.resolve(strict=False).parent != source_directory.resolve(
+            strict=False
+        ):
+            return None
+    except OSError:
+        return None
+    return capture_path
 
 
 def discover_captures(data_root: Path, source: SourceKind) -> SourceInventory:
@@ -521,10 +752,6 @@ def _load_capture(capture_path: Path, expected_source: SourceKind) -> LoadedCapt
         listings: tuple[AutoTraderListing, ...] = ()
     else:
         listings = AutoTraderAcquisition().acquire(raw_records)
-        if len(listings) != len(raw_records):
-            raise CaptureLoadError(
-                "records.json contains an invalid Auto Trader record"
-            )
         auction_lots = ()
 
     return LoadedCapture(

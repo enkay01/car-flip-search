@@ -201,9 +201,18 @@ def _parse_autotrader_record(record: AutoTraderRawRecord) -> AutoTraderListing |
         raw_seller = record["seller_type"]
         if raw_seller not in ("private", "dealer"):
             return None
+        raw_identity = record["identity"]
         return AutoTraderListing(
             id=AutoTraderListingId(record["id"]),
-            identity=CoreVehicleIdentity(**record["identity"]),
+            identity=CoreVehicleIdentity(
+                make=raw_identity["make"].strip().upper(),
+                model_variant=raw_identity["model_variant"],
+                registration_year=raw_identity["registration_year"],
+                fuel_type=raw_identity["fuel_type"],
+                transmission=raw_identity["transmission"],
+                body_style=raw_identity["body_style"],
+                door_count=raw_identity["door_count"],
+            ),
             mileage=record["mileage"],
             cash_price=CashPrice(record["cash_price"]),
             seller_type=SellerType(raw_seller),
@@ -764,15 +773,16 @@ def _observe_autotrader_card_chunk(
 
     items = re.findall(r"<li[^>]*>([^<]+)</li>", chunk)
 
+    model_variant = _observe_autotrader_model_variant(make, model_variant, subtitle)
     return AutoTraderCardObservation(
         listing_id=listing_id,
         make=make,
         model_variant=model_variant,
         registration_year=_observe_autotrader_registration_year(chunk, items),
         fuel_type=_observe_autotrader_fuel_type(items, subtitle),
-        transmission=_observe_autotrader_transmission(items),
+        transmission=_observe_autotrader_transmission(items, subtitle),
         body_style=_observe_autotrader_body_style(title, subtitle),
-        door_count=_observe_autotrader_door_count(items),
+        door_count=_observe_autotrader_door_count(items, subtitle),
         mileage=_observe_autotrader_mileage(chunk, items),
         cash_price=cash_price,
         seller_type=_observe_autotrader_seller_type(chunk),
@@ -822,8 +832,26 @@ def _observe_autotrader_registration_year(chunk: str, items: list[str]) -> int |
     return None
 
 
+def _observe_autotrader_model_variant(
+    make: str | None, title_variant: str | None, subtitle: str | None
+) -> str | None:
+    """Prefer the derivative in the subtitle over Auto Trader's broad title."""
+    variant_match = re.search(r"\b([A-Za-z]{1,3}\d{2,3}[A-Za-z]?)\b", subtitle or "")
+    variant = variant_match.group(1) if variant_match else title_variant
+    if (
+        variant is not None
+        and make is not None
+        and make.casefold() == "mercedes-benz"
+        and variant.casefold().endswith("d")
+    ):
+        # BCA emits the fuel suffix as Fuel Type (A180 + Diesel), while Auto
+        # Trader puts it on the derivative (A180d). Keep one comparison key.
+        return variant[:-1]
+    return variant
+
+
 def _observe_autotrader_fuel_type(items: list[str], subtitle: str | None) -> str | None:
-    """Return the fuel type only when the card names one; never default it."""
+    """Read fuel from the card or a conventional derivative suffix."""
     text = " ".join(items) + " " + (subtitle or "")
     lower = text.lower()
     if re.search(r"\b(diesel|tdi)\b", lower):
@@ -834,22 +862,36 @@ def _observe_autotrader_fuel_type(items: list[str], subtitle: str | None) -> str
         return "Electric"
     if re.search(r"\bpetrol\b", lower):
         return "Petrol"
+    variant_match = re.search(r"\b([A-Za-z]{1,3}\d{2,3}[A-Za-z]?)\b", subtitle or "")
+    if variant_match:
+        suffix = variant_match.group(1)[-1].casefold()
+        if suffix == "d":
+            return "Diesel"
+        if suffix == "e":
+            return "Hybrid"
+        return "Petrol"
     return None
 
 
-def _observe_autotrader_transmission(items: list[str]) -> str | None:
-    """Return the transmission only when the card names one; never default it."""
+def _observe_autotrader_transmission(
+    items: list[str], subtitle: str | None
+) -> str | None:
+    """Read the transmission from spec items or Auto Trader's trim text."""
     for item in items:
         lower = item.lower()
         if lower == "manual" or lower.startswith(("auto", "cvt", "semi")):
             return item
+    if re.search(r"\b(?:\dG-)?DCT\b", subtitle or "", re.IGNORECASE):
+        return "Auto Clutch"
+    if re.search(r"\b(?:DSG|S tronic|EAT\d+)\b", subtitle or "", re.IGNORECASE):
+        return "Auto Clutch"
     return None
 
 
 def _observe_autotrader_body_style(
     title: str | None, subtitle: str | None
 ) -> str | None:
-    """Return the body style only when the card names one; never default it."""
+    """Read a body style, using Auto Trader's 5dr hatchback convention."""
     text = f"{title or ''} {subtitle or ''}".lower()
     if re.search(r"\b(estate|touring|avant|sw)\b", text):
         return "Estate"
@@ -863,11 +905,15 @@ def _observe_autotrader_body_style(
         return "Convertible"
     if re.search(r"\bhatchback\b", text):
         return "Hatchback"
+    if re.search(r"\b5\s*dr\b", text):
+        return "Hatchback"
     return None
 
 
-def _observe_autotrader_door_count(items: list[str]) -> int | None:
-    for item in items:
+def _observe_autotrader_door_count(
+    items: list[str], subtitle: str | None
+) -> int | None:
+    for item in [*items, subtitle or ""]:
         door_match = re.search(r"(\d+)\s*(?:dr|doors)", item, re.IGNORECASE)
         if door_match:
             return int(door_match.group(1))

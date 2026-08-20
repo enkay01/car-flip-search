@@ -69,7 +69,8 @@ uv run dev --no-browser --port 5050 --data-root /path/to/captures
 The dashboard defaults to the newest usable BCA and Auto Trader Captures. It
 keeps an explicitly selected Capture Pair in the URL, shows all strict
 Candidate Vehicles, and opens source pages in separate tabs for inspection.
-Watchlisting remains on BCA.
+Use Manage Captures to select and delete old saved Captures, including several
+at once. Watchlisting remains on BCA.
 
 ## Development
 

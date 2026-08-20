@@ -17,6 +17,51 @@
         });
     });
 
+    const deleteForm = document.querySelector("[data-capture-delete-form]");
+    const captureCheckboxes = Array.from(document.querySelectorAll("[data-capture-checkbox]"));
+    const selectAllCaptures = document.querySelector("[data-select-all-captures]");
+    const selectionCount = document.querySelector("[data-selection-count]");
+    const deleteButton = document.querySelector("[data-delete-button]");
+
+    if (deleteForm && selectionCount && deleteButton) {
+        const updateSelection = () => {
+            const selectedCount = captureCheckboxes.filter((checkbox) => checkbox.checked).length;
+            selectionCount.textContent = `${selectedCount} selected`;
+            deleteButton.disabled = selectedCount === 0;
+            if (selectAllCaptures) {
+                selectAllCaptures.checked = captureCheckboxes.length > 0 && selectedCount === captureCheckboxes.length;
+                selectAllCaptures.indeterminate = selectedCount > 0 && selectedCount < captureCheckboxes.length;
+            }
+        };
+
+        captureCheckboxes.forEach((checkbox) => {
+            checkbox.addEventListener("change", updateSelection);
+        });
+
+        if (selectAllCaptures) {
+            selectAllCaptures.addEventListener("change", () => {
+                captureCheckboxes.forEach((checkbox) => {
+                    checkbox.checked = selectAllCaptures.checked;
+                });
+                updateSelection();
+            });
+        }
+
+        deleteForm.addEventListener("submit", (event) => {
+            const selectedCount = captureCheckboxes.filter((checkbox) => checkbox.checked).length;
+            if (selectedCount === 0) {
+                event.preventDefault();
+                return;
+            }
+            const label = selectedCount === 1 ? "Capture" : "Captures";
+            if (!window.confirm(`Delete ${selectedCount} ${label}? This cannot be undone.`)) {
+                event.preventDefault();
+            }
+        });
+
+        updateSelection();
+    }
+
     const searchInput = document.getElementById("vehicle-search");
     const table = document.querySelector("[data-opportunity-table]");
     const liveCount = document.querySelector("[data-live-count]");

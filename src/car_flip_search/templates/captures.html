@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Manage Captures · Car Flip Search</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+    <header class="site-header">
+        <div>
+            <p class="eyebrow">Car Flip Search</p>
+            <h1>Manage Captures</h1>
+            <p class="lede">Remove old saved Captures and keep the dashboard's history useful.</p>
+        </div>
+        <div class="header-actions">
+            <a class="button button-header" href="{{ url_for('dashboard') }}">Back to opportunities</a>
+        </div>
+    </header>
+
+    <main class="page-shell">
+        {% if page.deleted_count or page.skipped_count %}
+            <section class="notice-stack" aria-label="Capture deletion result">
+                {% if page.deleted_count %}
+                    <div class="notice notice-info">
+                        {{ page.deleted_count }} Capture{% if page.deleted_count != 1 %}s{% endif %} deleted.
+                    </div>
+                {% endif %}
+                {% if page.skipped_count %}
+                    <div class="notice notice-warning">
+                        {{ page.skipped_count }} selection{% if page.skipped_count != 1 %}s{% endif %} could not be deleted.
+                    </div>
+                {% endif %}
+            </section>
+        {% endif %}
+
+        <section class="panel capture-manager-panel">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">History</p>
+                    <h2>Saved Captures</h2>
+                </div>
+                <p class="muted">Select one or more Captures, then delete them together.</p>
+            </div>
+
+            {% if page.entries %}
+                <form class="capture-delete-form" method="post" action="{{ url_for('delete_capture_selections') }}" data-capture-delete-form>
+                    <div class="capture-toolbar">
+                        <label class="select-all-control">
+                            <input type="checkbox" data-select-all-captures>
+                            <span>Select all</span>
+                        </label>
+                        <span class="selection-count" data-selection-count>0 selected</span>
+                        <button class="button button-danger" type="submit" data-delete-button disabled>Delete selected</button>
+                    </div>
+
+                    <div class="capture-table-wrap">
+                        <table class="capture-table">
+                            <thead>
+                                <tr>
+                                    <th class="checkbox-column" scope="col"><span class="visually-hidden">Select</span></th>
+                                    <th scope="col">Source</th>
+                                    <th scope="col">Search name</th>
+                                    <th scope="col">Saved</th>
+                                    <th scope="col">Records</th>
+                                    <th scope="col">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for capture in page.entries %}
+                                    <tr class="{% if capture.problem %}capture-row-unavailable{% endif %}">
+                                        <td class="checkbox-column">
+                                            <input type="checkbox" name="capture" value="{{ capture.selection_value }}" data-capture-checkbox aria-label="Select {{ capture.source_label }} Capture {{ capture.capture_id }}">
+                                        </td>
+                                        <td>{{ capture.source_label }}</td>
+                                        <td>
+                                            <strong>{{ capture.search_name_label }}</strong>
+                                            <small class="capture-id">{{ capture.capture_id }}</small>
+                                        </td>
+                                        <td class="numeric">{{ capture.saved_at_label }}</td>
+                                        <td class="numeric">{{ capture.records_label }}</td>
+                                        <td>
+                                            <span class="capture-status-badge">{{ capture.status_label }}</span>
+                                            {% if capture.problem %}
+                                                <small class="capture-problem">{{ capture.problem }}</small>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="destructive-help">Deleting a Capture removes its saved pages, records, and skipped-car log. This cannot be undone.</p>
+                </form>
+            {% else %}
+                <div class="empty-state compact">
+                    <h3>No saved Captures</h3>
+                    <p>New BCA and Auto Trader Captures will appear here after you save them.</p>
+                </div>
+            {% endif %}
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>

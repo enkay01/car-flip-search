@@ -13,10 +13,13 @@
             <h1>Buying opportunities</h1>
             <p class="lede">Review the valuation signals from your latest BCA and Auto Trader Captures.</p>
         </div>
-        <div class="header-status">
-            <span class="status-label">Capture Pair</span>
-            <strong>{{ page.selected_pair_label }}</strong>
-            <span class="muted">Local dashboard</span>
+        <div class="header-actions">
+            <div class="header-status">
+                <span class="status-label">Capture Pair</span>
+                <strong>{{ page.selected_pair_label }}</strong>
+                <span class="muted">Local dashboard</span>
+            </div>
+            <a class="button button-header" href="{{ url_for('capture_manager') }}">Manage Captures</a>
         </div>
     </header>
 
@@ -77,7 +80,7 @@
                             <div><dt>Search Name</dt><dd>{{ capture.manifest.search_name }}</dd></div>
                             <div><dt>Saved</dt><dd>{{ capture.manifest.saved_at_local }}</dd></div>
                             <div><dt>Capture ID</dt><dd>{{ capture.capture_id }}</dd></div>
-                            <div><dt>Records</dt><dd>{{ capture.valid_count }} valid · {{ capture.manifest.records_skipped }} skipped</dd></div>
+                            <div><dt>Records</dt><dd>{{ capture.valid_count }} captured · {{ capture.comparison_ready_count }} comparison-ready · {{ capture.manifest.records_skipped }} skipped</dd></div>
                             <div><dt>Pages</dt><dd>{{ capture.manifest.pages_captured }}</dd></div>
                             {% if capture.manifest.movement_limit is not none %}
                                 <div><dt>Movement limit</dt><dd>{{ capture.manifest.movement_limit }}</dd></div>

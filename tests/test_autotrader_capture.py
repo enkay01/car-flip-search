@@ -177,7 +177,7 @@ def test_observation_never_invents_unstated_fields() -> None:
     assert observation.registration_year is None
 
 
-def test_validation_saves_record_when_optional_identity_is_unobserved() -> None:
+def test_validation_extracts_identity_from_autotrader_subtitle() -> None:
     card = make_listing_card(
         ListingSpec(
             title="Mercedes-Benz A Class",
@@ -195,8 +195,12 @@ def test_validation_saves_record_when_optional_identity_is_unobserved() -> None:
     assert result.record is not None
     assert result.record["identity"] == {
         "make": "Mercedes-Benz",
-        "model_variant": "A",
+        "model_variant": "A200",
         "registration_year": 2016,
+        "fuel_type": "Petrol",
+        "transmission": "Auto Clutch",
+        "body_style": "Hatchback",
+        "door_count": 5,
     }
 
 

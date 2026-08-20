@@ -10,6 +10,8 @@
     --accent-soft: #e6f1e9;
     --warning: #8a5a11;
     --warning-soft: #fff5dc;
+    --danger: #9d332d;
+    --danger-dark: #7e2521;
     --shadow: 0 10px 30px rgb(24 48 34 / 6%);
 }
 
@@ -80,6 +82,13 @@ a {
     align-content: end;
     min-width: 230px;
     text-align: right;
+}
+
+.header-actions {
+    display: flex;
+    align-items: end;
+    justify-content: flex-end;
+    gap: 1rem;
 }
 
 .header-status strong {
@@ -193,10 +202,36 @@ a:focus-visible {
     background: var(--accent-dark);
 }
 
+.button-header {
+    color: #f5fbf6;
+    background: rgb(255 255 255 / 10%);
+    border-color: rgb(255 255 255 / 30%);
+}
+
+.button-header:hover {
+    background: rgb(255 255 255 / 18%);
+}
+
 .button-secondary {
     color: var(--accent-dark);
     background: var(--accent-soft);
     border-color: #c3deca;
+}
+
+.button-danger {
+    color: #fff;
+    background: var(--danger);
+}
+
+.button-danger:hover:not(:disabled) {
+    background: var(--danger-dark);
+}
+
+.button-danger:disabled {
+    color: #aeb7b0;
+    background: #e6eae7;
+    border-color: #d8dfd9;
+    cursor: not-allowed;
 }
 
 .capture-details {
@@ -255,6 +290,126 @@ a:focus-visible {
 .capture-problems ul {
     margin: 0.35rem 0 0;
     padding-left: 1.2rem;
+}
+
+.capture-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin: 1.25rem 0;
+}
+
+.select-all-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--ink);
+    font-weight: 750;
+}
+
+.selection-count {
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+.capture-toolbar .button {
+    margin-left: auto;
+}
+
+.capture-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+}
+
+.capture-table {
+    width: 100%;
+    min-width: 800px;
+    border-collapse: collapse;
+    background: var(--paper);
+}
+
+.capture-table th,
+.capture-table td {
+    padding: 0.8rem 0.75rem;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: middle;
+}
+
+.capture-table th {
+    color: var(--muted);
+    background: #f8faf8;
+    font-size: 0.74rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.capture-table tbody tr:hover {
+    background: #fbfdfb;
+}
+
+.capture-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.checkbox-column {
+    width: 3.25rem;
+    text-align: center !important;
+}
+
+.checkbox-column input,
+.select-all-control input {
+    width: 1.05rem;
+    height: 1.05rem;
+    min-height: 0;
+    accent-color: var(--accent);
+}
+
+.capture-id,
+.capture-problem {
+    display: block;
+    margin-top: 0.15rem;
+    color: var(--muted);
+    font-size: 0.78rem;
+}
+
+.capture-status-badge {
+    display: inline-flex;
+    padding: 0.2rem 0.5rem;
+    color: var(--accent-dark);
+    background: var(--accent-soft);
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 750;
+}
+
+.capture-row-unavailable {
+    background: #fffdf8;
+}
+
+.capture-row-unavailable .capture-status-badge {
+    color: var(--warning);
+    background: var(--warning-soft);
+}
+
+.destructive-help {
+    margin: 0.85rem 0 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }
 
 .notice-stack {
@@ -521,7 +676,8 @@ a:focus-visible {
     .site-header,
     .section-heading,
     .opportunity-heading,
-    .detail-heading {
+    .detail-heading,
+    .header-actions {
         align-items: flex-start;
         flex-direction: column;
     }
@@ -529,6 +685,10 @@ a:focus-visible {
     .header-status {
         min-width: 0;
         text-align: left;
+    }
+
+    .header-actions {
+        width: 100%;
     }
 
     .section-heading > .muted,
@@ -551,6 +711,16 @@ a:focus-visible {
     }
 
     .live-count {
+        width: 100%;
+        margin-left: 0;
+    }
+
+    .capture-toolbar {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .capture-toolbar .button {
         width: 100%;
         margin-left: 0;
     }
