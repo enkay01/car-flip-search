@@ -223,7 +223,7 @@ def test_observe_bca_cards_preserves_literal_spaces_in_lot_ids() -> None:
     assert observations[0].lot_id == "KS18 ZFM"
 
 
-def test_observe_bca_cards_does_not_infer_body_style_from_arbitrary_title_suffix() -> (
+def test_observe_bca_cards_preserves_unknown_body_style_without_rejecting_card() -> (
     None
 ):
     card = make_card(CardSpec(title="BMW 320d M Sport"))
@@ -232,7 +232,11 @@ def test_observe_bca_cards_does_not_infer_body_style_from_arbitrary_title_suffix
 
     assert observation.body_style is None
     assert observation.trim is None
-    assert "missing body style" in validate_bca_observation(observation).reasons
+    result = validate_bca_observation(observation)
+    assert result.reasons == ()
+    assert result.record is not None
+    assert result.record["identity"]["model_variant"] == "320d"
+    assert "body_style" not in result.record["identity"]
 
 
 def test_observe_bca_cards_returns_one_observation_per_vehicle() -> None:
@@ -329,9 +333,6 @@ def test_validation_flags_write_off_and_condition_reasons() -> None:
     [
         (CardSpec(mileage=None), "missing mileage"),
         (CardSpec(year=None), "missing registration year"),
-        (CardSpec(fuel=None), "missing fuel type"),
-        (CardSpec(transmission=None), "missing transmission"),
-        (CardSpec(doors=None), "missing door count"),
         (CardSpec(cap_clean_price=None), "missing CAP Clean price"),
         (CardSpec(condition_block=False), "condition not reported on search card"),
     ],
@@ -344,6 +345,26 @@ def test_validation_reports_each_missing_field(
     result = validate_bca_observation(observations[0])
     assert result.record is None
     assert expected_reason in result.reasons
+
+
+def test_validation_accepts_missing_informational_fields() -> None:
+    observation = replace(
+        base_observation(),
+        fuel_type=None,
+        transmission=None,
+        body_style=None,
+        door_count=None,
+    )
+
+    result = validate_bca_observation(observation)
+
+    assert result.reasons == ()
+    assert result.record is not None
+    assert result.record["identity"] == {
+        "make": "MERCEDES-BENZ",
+        "model_variant": "A160",
+        "registration_year": 2018,
+    }
 
 
 def test_validation_rejects_impossible_values_without_fabrication() -> None:

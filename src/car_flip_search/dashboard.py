@@ -149,8 +149,9 @@ class LoadedCapture:
         record_label = "record" if excluded_count == 1 else "records"
         return (
             f"Auto Trader Capture {self.capture_id} has {excluded_count} captured "
-            f"{record_label} without complete vehicle identity; they are excluded "
-            "from market evidence. The Capture remains usable."
+            f"{record_label} without the make, model, year, mileage, Cash Price, "
+            "or Seller Type required for comparison; they are excluded from market "
+            "evidence. The Capture remains usable."
         )
 
     @property
@@ -323,7 +324,7 @@ class CandidateView:
             identity.fuel_type,
             identity.transmission,
             identity.body_style,
-            f"{identity.door_count} doors",
+            f"{identity.door_count} doors" if identity.door_count is not None else None,
         )
         return " · ".join(value for value in details if value)
 
@@ -371,9 +372,9 @@ class CandidateView:
             identity.model_variant,
             self.candidate.auction_lot.trim or "",
             str(identity.registration_year),
-            identity.fuel_type,
-            identity.transmission,
-            identity.body_style,
+            identity.fuel_type or "",
+            identity.transmission or "",
+            identity.body_style or "",
         )
         return " ".join(values).casefold()
 
@@ -1061,9 +1062,9 @@ def _candidate_search_text(candidate: CandidateVehicle) -> str:
         identity.model_variant,
         candidate.auction_lot.trim or "",
         str(identity.registration_year),
-        identity.fuel_type,
-        identity.transmission,
-        identity.body_style,
+        identity.fuel_type or "",
+        identity.transmission or "",
+        identity.body_style or "",
     )
     return " ".join(values).casefold()
 

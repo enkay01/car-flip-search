@@ -80,9 +80,6 @@ def incomplete_records() -> tuple[BcaRawRecord, ...]:
     missing_identity = make_record()
     missing_identity.pop("identity")
 
-    incomplete_identity = make_record()
-    incomplete_identity["identity"].pop("door_count")
-
     missing_mileage = make_record()
     missing_mileage.pop("mileage")
 
@@ -116,7 +113,6 @@ def incomplete_records() -> tuple[BcaRawRecord, ...]:
     return (
         missing_id,
         missing_identity,
-        incomplete_identity,
         missing_mileage,
         negative_mileage,
         missing_cap_clean_price,
@@ -136,9 +132,6 @@ def incomplete_autotrader_records() -> tuple[AutoTraderRawRecord, ...]:
 
     missing_identity = make_autotrader_record()
     missing_identity.pop("identity")
-
-    incomplete_identity = make_autotrader_record()
-    incomplete_identity["identity"].pop("door_count")
 
     missing_mileage = make_autotrader_record()
     missing_mileage.pop("mileage")
@@ -161,7 +154,6 @@ def incomplete_autotrader_records() -> tuple[AutoTraderRawRecord, ...]:
     return (
         missing_id,
         missing_identity,
-        incomplete_identity,
         missing_mileage,
         negative_mileage,
         missing_cash_price,
@@ -237,6 +229,20 @@ def test_bca_acquisition_silently_discards_incomplete_records(
     assert BcaAcquisition().acquire([invalid_record]) == ()
 
 
+def test_bca_acquisition_accepts_missing_informational_identity_fields() -> None:
+    record = make_record()
+    for field in ("fuel_type", "transmission", "body_style", "door_count"):
+        record["identity"].pop(field, None)
+
+    lots = BcaAcquisition().acquire([record])
+
+    assert len(lots) == 1
+    assert lots[0].identity.fuel_type is None
+    assert lots[0].identity.transmission is None
+    assert lots[0].identity.body_style is None
+    assert lots[0].identity.door_count is None
+
+
 def test_bca_acquisition_can_rediscover_a_record_after_missing_data_is_added() -> None:
     record_without_mileage = make_record()
     record_without_mileage.pop("mileage")
@@ -298,6 +304,35 @@ def test_autotrader_acquisition_silently_discards_incomplete_records(
     invalid_record: AutoTraderRawRecord,
 ) -> None:
     assert AutoTraderAcquisition().acquire([invalid_record]) == ()
+
+
+def test_autotrader_acquisition_accepts_missing_informational_identity_fields() -> None:
+    record = make_autotrader_record()
+    for field in ("fuel_type", "transmission", "body_style", "door_count"):
+        record["identity"].pop(field, None)
+
+    listings = AutoTraderAcquisition().acquire([record])
+
+    assert len(listings) == 1
+    assert listings[0].identity.fuel_type is None
+    assert listings[0].identity.transmission is None
+    assert listings[0].identity.body_style is None
+    assert listings[0].identity.door_count is None
+
+
+def test_autotrader_acquisition_normalizes_c300dh_to_the_c300_model_variant() -> None:
+    record = make_autotrader_record()
+    record["identity"] = {
+        "make": "Mercedes-Benz",
+        "model_variant": "C",
+        "registration_year": 2017,
+    }
+    record["trim"] = "2.1 C300dh AMG Line G-Tronic+ Euro 6 (s/s) 4dr"
+
+    listings = AutoTraderAcquisition().acquire([record])
+
+    assert listings[0].identity.model_variant == "C300"
+    assert listings[0].identity.fuel_type is None
 
 
 def test_autotrader_acquisition_allows_omitted_trim() -> None:
@@ -385,6 +420,19 @@ def test_manual_bca_importer_parses_dom_html_and_json_scripts(tmp_path: Path) ->
 
     # 5. Non-existent file returns empty tuple
     assert importer.import_from_html_file(str(tmp_path / "missing.html")) == ()
+
+
+def test_manual_bca_importer_keeps_json_records_without_informational_details() -> None:
+    record = make_record()
+    for field in ("fuel_type", "transmission", "body_style", "door_count"):
+        record["identity"].pop(field, None)
+    payload = json.dumps({"props": {"pageProps": {"searchResults": [record]}}})
+    html = f'<script id="__NEXT_DATA__" type="application/json">{payload}</script>'
+
+    lots = ManualBcaImporter().import_from_html(html)
+
+    assert len(lots) == 1
+    assert lots[0].identity.body_style is None
 
 
 def sample_autotrader_live_card_html() -> str:

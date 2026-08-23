@@ -67,30 +67,38 @@ class PriceSpread:
 
 @dataclass(frozen=True)
 class CoreVehicleIdentity:
+    """Observed vehicle fields; comparison core is make plus Model Variant."""
+
     make: str
     model_variant: str
     registration_year: int
-    fuel_type: str
-    transmission: str
-    body_style: str
-    door_count: int
+    fuel_type: str | None = None
+    transmission: str | None = None
+    body_style: str | None = None
+    door_count: int | None = None
 
     def __post_init__(self) -> None:
-        text_fields = (
-            self.make,
-            self.model_variant,
+        if not self.make.strip() or not self.model_variant.strip():
+            raise ValueError(
+                "Core Vehicle Identity make and Model Variant must be non-blank strings"
+            )
+        optional_text_fields = (
             self.fuel_type,
             self.transmission,
             self.body_style,
         )
-        if any(not value.strip() for value in text_fields):
+        if any(
+            value is not None and not value.strip() for value in optional_text_fields
+        ):
             raise ValueError(
-                "Core Vehicle Identity text fields must be non-blank strings"
+                "Core Vehicle Identity details must be non-blank when known"
             )
         if not 1886 <= self.registration_year <= 9999:
             raise ValueError("Core Vehicle Identity registration year must be valid")
-        if self.door_count < 1:
-            raise ValueError("Core Vehicle Identity door count must be positive")
+        if self.door_count is not None and self.door_count < 1:
+            raise ValueError(
+                "Core Vehicle Identity door count must be positive when known"
+            )
 
 
 @dataclass(frozen=True)
@@ -485,12 +493,12 @@ class _SortKey(NamedTuple):
 type _SortValueStrategy = Callable[[CandidateVehicle], _SortKey | None]
 
 
-def _text_sort_key(value: str) -> _SortKey:
-    return _SortKey(0, value)
+def _text_sort_key(value: str | None) -> _SortKey | None:
+    return None if value is None else _SortKey(0, value)
 
 
-def _number_sort_key(value: int) -> _SortKey:
-    return _SortKey(value, "")
+def _number_sort_key(value: int | None) -> _SortKey | None:
+    return None if value is None else _SortKey(value, "")
 
 
 _SORT_VALUE_STRATEGIES: dict[SortField, _SortValueStrategy] = {

@@ -263,7 +263,7 @@ def test_latest_pair_renders_table_and_evidence_links(tmp_path: Path) -> None:
     assert "Price Spread" in body
 
 
-def test_partial_autotrader_identity_keeps_capture_usable_with_warning(
+def test_partial_autotrader_identity_remains_comparable_when_core_fields_are_known(
     tmp_path: Path,
 ) -> None:
     write_capture(
@@ -307,21 +307,17 @@ def test_partial_autotrader_identity_keeps_capture_usable_with_warning(
 
     assert page.has_pair
     assert page.autotrader_capture is not None
-    assert page.autotrader_capture.comparison_ready_count == 0
-    assert page.notices == (
-        (
-            "Auto Trader Capture at-new has 1 captured record without complete vehicle "
-            "identity; they are excluded from market evidence. The Capture remains usable."
-        ),
-    )
+    assert page.autotrader_capture.comparison_ready_count == 1
+    assert page.notices == ()
     assert len(page.candidates) == 1
-    assert page.candidates[0].price_spread_label == "No Price Spread"
+    assert page.candidates[0].comparable_supply == 1
+    assert page.candidates[0].price_spread_label == "+£4,000"
 
     response = create_app(tmp_path).test_client().get("/")
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    assert "The Capture remains usable." in body
-    assert "No Market Comparables." in body
+    assert "The Capture remains usable." not in body
+    assert "No Market Comparables." not in body
 
 
 def test_explicit_missing_capture_falls_back_only_for_that_source(

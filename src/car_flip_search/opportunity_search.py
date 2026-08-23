@@ -100,7 +100,8 @@ def _is_market_comparable(
     listing: AutoTraderListing,
 ) -> bool:
     return (
-        listing.identity == auction_lot.identity
+        _same_core_vehicle_identity(auction_lot, listing)
+        and listing.identity.registration_year == auction_lot.identity.registration_year
         and abs(listing.mileage - auction_lot.mileage) <= MILEAGE_BAND_MILES
     )
 
@@ -110,9 +111,27 @@ def _is_high_mileage_reference(
     listing: AutoTraderListing,
 ) -> bool:
     return (
-        listing.identity == auction_lot.identity
+        _same_core_vehicle_identity(auction_lot, listing)
+        and listing.identity.registration_year == auction_lot.identity.registration_year
         and listing.mileage - auction_lot.mileage > MILEAGE_BAND_MILES
     )
+
+
+def _same_core_vehicle_identity(
+    auction_lot: AuctionLot,
+    listing: AutoTraderListing,
+) -> bool:
+    auction_identity = auction_lot.identity
+    listing_identity = listing.identity
+    return _comparison_text(auction_identity.make) == _comparison_text(
+        listing_identity.make
+    ) and _comparison_text(auction_identity.model_variant) == _comparison_text(
+        listing_identity.model_variant
+    )
+
+
+def _comparison_text(value: str) -> str:
+    return " ".join(value.casefold().split())
 
 
 def _is_trim_match(

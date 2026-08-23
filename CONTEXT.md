@@ -35,12 +35,16 @@ A Candidate Vehicle with known clean condition and no reported write-off or acci
 _Avoid_: Candidate, clean car
 
 **Comparison-Eligible Candidate**:
-A Condition-Eligible Candidate with Core Vehicle Identity and mileage sufficiently known to establish Market Comparables.
+A Condition-Eligible Candidate with a known Core Vehicle Identity, registration year, and mileage sufficiently known to establish Market Comparables. Missing Vehicle Details do not make a Candidate ineligible.
 _Avoid_: Partial match, approximate candidate
 
 **Core Vehicle Identity**:
-The attributes that must match between a Candidate Vehicle and a market listing: make, Model Variant, registration year, fuel type, transmission, body style, and door count.
-_Avoid_: Broad model family, trim
+The comparison key shared by a Candidate Vehicle and a market listing: make and Model Variant. Registration year and Mileage Band are separate Market Comparable criteria. Fuel type, transmission, body style, and door count are not part of this key.
+_Avoid_: Broad model family, trim, full vehicle specification
+
+**Vehicle Details**:
+The observed fuel type, transmission, body style, and door count of a Candidate Vehicle or Auto Trader Listing. Vehicle Details are informational inspection context: they may be missing or different without preventing a Market Comparable.
+_Avoid_: Required identity, eligibility gate
 
 **Model Variant**:
 The model-level engine or badge variant that differentiates vehicles in the same model family, such as A180d and A200d.
@@ -51,7 +55,7 @@ An optional match of derivative or trim between a Candidate Vehicle and a market
 _Avoid_: Required identity, eligibility gate
 
 **Market Comparable**:
-An Auto Trader Listing that matches a Candidate Vehicle's Core Vehicle Identity and Mileage Band. A Trim Match is preferred but not required.
+An Auto Trader Listing with the same Core Vehicle Identity and registration year as a Candidate Vehicle, and with mileage within the Mileage Band. A Trim Match is preferred but not required; Vehicle Details are informational and may be missing or different.
 _Avoid_: Same car, equivalent car
 
 **Mileage Band**:
@@ -67,7 +71,7 @@ The geographic coverage of the BCA and Auto Trader comparison market: the United
 _Avoid_: Local market, search radius
 
 **High-Mileage Reference**:
-An Auto Trader Listing that matches a Candidate Vehicle's Core Vehicle Identity but has mileage above its Mileage Band. It is not a Market Comparable.
+An Auto Trader Listing with the same Core Vehicle Identity and registration year as a Candidate Vehicle but with mileage above its Mileage Band. It is not a Market Comparable.
 _Avoid_: Comparable, match
 
 **Retail Floor**:

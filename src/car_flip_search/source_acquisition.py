@@ -1,4 +1,4 @@
-"""Parse BCA and Auto Trader payloads into complete domain records at the acquisition seam."""
+"""Parse BCA and Auto Trader payloads into comparison-ready domain records."""
 
 import contextlib
 import json
@@ -23,7 +23,7 @@ from .model import (
 
 
 class BcaRawIdentity(TypedDict, total=False):
-    """Raw BCA identity fields; missing fields are rejected during parsing."""
+    """Raw BCA identity fields; missing comparison fields are rejected."""
 
     make: str
     model_variant: str
@@ -64,7 +64,7 @@ class BcaAcquisition:
 
 
 class AutoTraderRawIdentity(TypedDict, total=False):
-    """Raw Auto Trader identity fields; acquisition enforces domain completeness."""
+    """Raw Auto Trader identity fields; details may be absent from a result card."""
 
     make: str
     model_variant: str
@@ -182,7 +182,7 @@ def _parse_bca_record(record: BcaRawRecord) -> AuctionLot | None:
             cap_clean_price=CapCleanPrice(record["cap_clean_price"]),
             trim=record.get("trim"),
         )
-    except (KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         return None
 
 
@@ -202,16 +202,22 @@ def _parse_autotrader_record(record: AutoTraderRawRecord) -> AutoTraderListing |
         if raw_seller not in ("private", "dealer"):
             return None
         raw_identity = record["identity"]
+        raw_make = raw_identity.get("make")
+        raw_model_variant = raw_identity.get("model_variant")
         return AutoTraderListing(
             id=AutoTraderListingId(record["id"]),
             identity=CoreVehicleIdentity(
-                make=raw_identity["make"].strip().upper(),
-                model_variant=raw_identity["model_variant"],
+                make=raw_make.strip().upper() if raw_make is not None else raw_make,
+                model_variant=_observe_autotrader_model_variant(
+                    raw_make,
+                    raw_model_variant,
+                    record.get("trim"),
+                ),
                 registration_year=raw_identity["registration_year"],
-                fuel_type=raw_identity["fuel_type"],
-                transmission=raw_identity["transmission"],
-                body_style=raw_identity["body_style"],
-                door_count=raw_identity["door_count"],
+                fuel_type=raw_identity.get("fuel_type"),
+                transmission=raw_identity.get("transmission"),
+                body_style=raw_identity.get("body_style"),
+                door_count=raw_identity.get("door_count"),
             ),
             mileage=record["mileage"],
             cash_price=CashPrice(record["cash_price"]),
@@ -612,8 +618,9 @@ def validate_bca_observation(
 ) -> BcaValidationResult:
     """Validate one observed card into a record plus every reason it is skipped.
 
-    Missing or invalid required fields yield skip reasons; the tool never
-    invents identity, mileage, CAP Clean Price, or condition values.
+    Missing or invalid comparison-critical fields yield skip reasons. Fuel
+    type, transmission, body style, and door count are optional details; the
+    tool preserves them when observed and never invents them.
     """
     reasons: list[str] = []
 
@@ -627,22 +634,14 @@ def validate_bca_observation(
     if model_variant is None:
         reasons.append("missing model variant")
     fuel_type = _non_blank(observation.fuel_type)
-    if fuel_type is None:
-        reasons.append("missing fuel type")
     transmission = _non_blank(observation.transmission)
-    if transmission is None:
-        reasons.append("missing transmission")
     body_style = _non_blank(observation.body_style)
-    if body_style is None:
-        reasons.append("missing body style")
 
     if observation.registration_year is None:
         reasons.append("missing registration year")
     elif not 1886 <= observation.registration_year <= 9999:
         reasons.append("invalid registration year")
-    if observation.door_count is None:
-        reasons.append("missing door count")
-    elif observation.door_count < 1:
+    if observation.door_count is not None and observation.door_count < 1:
         reasons.append("invalid door count")
     if observation.mileage is None:
         reasons.append("missing mileage")
@@ -664,17 +663,23 @@ def validate_bca_observation(
     if reasons:
         return BcaValidationResult(record=None, reasons=tuple(reasons))
 
+    identity: BcaRawIdentity = {
+        "make": make,
+        "model_variant": model_variant,
+        "registration_year": observation.registration_year,
+    }
+    if fuel_type is not None:
+        identity["fuel_type"] = fuel_type
+    if transmission is not None:
+        identity["transmission"] = transmission
+    if body_style is not None:
+        identity["body_style"] = body_style
+    if observation.door_count is not None:
+        identity["door_count"] = observation.door_count
+
     record: BcaRawRecord = {
         "id": lot_id,
-        "identity": {
-            "make": make,
-            "model_variant": model_variant,
-            "registration_year": observation.registration_year,
-            "fuel_type": fuel_type,
-            "transmission": transmission,
-            "body_style": body_style,
-            "door_count": observation.door_count,
-        },
+        "identity": identity,
         "mileage": observation.mileage,
         "cap_clean_price": observation.cap_clean_price,
         "clean_condition": True,
@@ -836,17 +841,20 @@ def _observe_autotrader_model_variant(
     make: str | None, title_variant: str | None, subtitle: str | None
 ) -> str | None:
     """Prefer the derivative in the subtitle over Auto Trader's broad title."""
-    variant_match = re.search(r"\b([A-Za-z]{1,3}\d{2,3}[A-Za-z]?)\b", subtitle or "")
+    variant_match = re.search(
+        r"\b([A-Za-z]{1,3}\d{2,3}[A-Za-z]{0,2})\b", subtitle or ""
+    )
     variant = variant_match.group(1) if variant_match else title_variant
-    if (
-        variant is not None
-        and make is not None
-        and make.casefold() == "mercedes-benz"
-        and variant.casefold().endswith("d")
-    ):
-        # BCA emits the fuel suffix as Fuel Type (A180 + Diesel), while Auto
-        # Trader puts it on the derivative (A180d). Keep one comparison key.
-        return variant[:-1]
+    if variant is not None and make is not None and make.casefold() == "mercedes-benz":
+        lowered = variant.casefold()
+        if lowered.endswith("dh"):
+            # Auto Trader can render the C300 diesel-hybrid derivative as C300dh;
+            # BCA records the same model-level badge as C300.
+            return variant[:-2]
+        if lowered.endswith("d"):
+            # BCA emits the fuel suffix as Fuel Type (A180 + Diesel), while Auto
+            # Trader puts it on the derivative (A180d). Keep one comparison key.
+            return variant[:-1]
     return variant
 
 
@@ -943,11 +951,10 @@ def validate_autotrader_observation(
 ) -> AutoTraderValidationResult:
     """Validate one observed Auto Trader card into a record plus every skip reason.
 
-    Missing or invalid capture-critical fields yield skip reasons. Fuel type,
-    transmission, body style, and door count are optional at this boundary:
-    when the card does not show them, the saved raw record preserves the
-    fields that were observed and leaves those fields absent. Acquisition
-    remains strict when converting raw records into domain listings.
+    Missing or invalid comparison-critical fields yield skip reasons. Fuel
+    type, transmission, body style, and door count are optional at this
+    boundary. When the card does not show them, the saved raw record preserves
+    the fields that were observed and leaves those fields absent.
     """
     reasons: list[str] = []
 
@@ -1030,17 +1037,18 @@ def _extract_bca_records_from_json_string(script_json: str) -> list[BcaRawRecord
         current = queue.pop(0)
         visited += 1
 
-        with contextlib.suppress(KeyError, TypeError, ValueError):
+        with contextlib.suppress(AttributeError, KeyError, TypeError, ValueError):
             ident_raw = current["identity"]
             identity: BcaRawIdentity = {
                 "make": str(ident_raw["make"]),
                 "model_variant": str(ident_raw["model_variant"]),
                 "registration_year": int(ident_raw["registration_year"]),
-                "fuel_type": str(ident_raw["fuel_type"]),
-                "transmission": str(ident_raw["transmission"]),
-                "body_style": str(ident_raw["body_style"]),
-                "door_count": int(ident_raw["door_count"]),
             }
+            for field in ("fuel_type", "transmission", "body_style"):
+                if ident_raw.get(field) is not None:
+                    identity[field] = str(ident_raw[field])
+            if ident_raw.get("door_count") is not None:
+                identity["door_count"] = int(ident_raw["door_count"])
             record: BcaRawRecord = {
                 "id": str(current["id"]),
                 "identity": identity,

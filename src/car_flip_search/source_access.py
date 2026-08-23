@@ -418,11 +418,12 @@ def _parse_autotrader_payload(raw_json: str) -> AutoTraderRawRecord | None:
             "make": str(ident_raw["make"]),
             "model_variant": str(ident_raw["model_variant"]),
             "registration_year": int(ident_raw["registration_year"]),
-            "fuel_type": str(ident_raw["fuel_type"]),
-            "transmission": str(ident_raw["transmission"]),
-            "body_style": str(ident_raw["body_style"]),
-            "door_count": int(ident_raw["door_count"]),
         }
+        for field in ("fuel_type", "transmission", "body_style"):
+            if ident_raw.get(field) is not None:
+                identity[field] = str(ident_raw[field])
+        if ident_raw.get("door_count") is not None:
+            identity["door_count"] = int(ident_raw["door_count"])
         record: AutoTraderRawRecord = {
             "id": str(data["id"]),
             "identity": identity,
@@ -435,5 +436,5 @@ def _parse_autotrader_payload(raw_json: str) -> AutoTraderRawRecord | None:
         if "source_url" in data and data["source_url"] is not None:
             record["source_url"] = str(data["source_url"])
         return record
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None

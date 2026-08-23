@@ -28,7 +28,7 @@ This document details the permitted access mechanisms, account permissions, usag
   - `records.json` — valid parsed car records (deduplicated by BCA lot ID; the latest version of a lot is kept).
   - `skipped.json` — one entry per skipped car with the lot where possible and every skip reason.
   - `manifest.json` — search name, capture ID, limits, counts, and stop reason.
-- A car is skipped when a required field (lot ID, Core Vehicle Identity, mileage, CAP Clean Price, condition) is missing or invalid. The tool never invents condition, identity, mileage, or CAP Clean Price values.
+- A car is skipped when a comparison-critical field (lot ID, make, Model Variant, registration year, mileage, CAP Clean Price, condition) is missing or invalid. Vehicle Details such as fuel type, transmission, body style, and door count may be absent; the tool never invents condition, identity, mileage, or CAP Clean Price values.
 - Automated CAPTCHA bypass, anti-bot circumvention, and proxy rotation are strictly prohibited.
 
 ### Capture Usage (CLI)

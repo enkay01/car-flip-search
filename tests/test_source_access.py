@@ -155,6 +155,37 @@ def test_autotrader_source_client_demonstrates_minimal_authenticated_read() -> N
     assert req.headers["X-API-Key"] == "api-key-123"
 
 
+def test_autotrader_source_client_accepts_missing_informational_details() -> None:
+    payload = json.dumps(
+        {
+            "id": "202603271072975",
+            "identity": {
+                "make": "BMW",
+                "model_variant": "320d",
+                "registration_year": 2016,
+            },
+            "mileage": 117004,
+            "cash_price": 8995,
+            "seller_type": "dealer",
+        }
+    )
+    transport = FakeHttpTransport(
+        [HttpResponse(status_code=200, headers={}, body=payload)]
+    )
+    client = AutoTraderSourceClient(
+        AutoTraderCredentials(client_id="cid", client_secret="secret"), transport
+    )
+
+    record = client.read_listing("202603271072975")
+
+    assert record is not None
+    assert record["identity"] == {
+        "make": "BMW",
+        "model_variant": "320d",
+        "registration_year": 2016,
+    }
+
+
 def test_autotrader_source_client_hard_stops_on_bot_and_auth_challenges() -> None:
     creds = AutoTraderCredentials(client_id="cid", client_secret="csec")
 

@@ -87,13 +87,9 @@ def test_matching_listing_is_selected_as_a_market_comparable() -> None:
         ("make", "Audi"),
         ("model_variant", "A200d"),
         ("registration_year", 2019),
-        ("fuel_type", "Petrol"),
-        ("transmission", "Manual"),
-        ("body_style", "Saloon"),
-        ("door_count", 3),
     ],
 )
-def test_a_single_identity_field_mismatch_excludes_the_listing(
+def test_a_core_identity_or_year_mismatch_excludes_the_listing(
     field: str, changed_value: str | int
 ) -> None:
     listing = replace(
@@ -104,6 +100,60 @@ def test_a_single_identity_field_mismatch_excludes_the_listing(
     opportunities = OpportunitySearch().search([BASE_LOT], MarketSnapshot([listing]))
 
     assert opportunities.candidates[0].comparable_evidence == NoComparableEvidence()
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    [
+        ("fuel_type", "Petrol"),
+        ("transmission", "Manual"),
+        ("body_style", "Saloon"),
+        ("door_count", 3),
+    ],
+)
+def test_informational_identity_mismatch_does_not_exclude_the_listing(
+    field: str, changed_value: str | int
+) -> None:
+    listing = replace(
+        BASE_LISTING,
+        identity=replace(A180D_IDENTITY, **{field: changed_value}),
+    )
+
+    opportunities = OpportunitySearch().search([BASE_LOT], MarketSnapshot([listing]))
+
+    assert opportunities.candidates[0].comparable_supply == 1
+
+
+def test_missing_informational_identity_fields_do_not_exclude_the_listing() -> None:
+    listing = replace(
+        BASE_LISTING,
+        identity=replace(
+            A180D_IDENTITY,
+            fuel_type=None,
+            transmission=None,
+            body_style=None,
+            door_count=None,
+        ),
+    )
+
+    opportunities = OpportunitySearch().search([BASE_LOT], MarketSnapshot([listing]))
+
+    assert opportunities.candidates[0].comparable_supply == 1
+
+
+def test_make_and_model_comparison_is_case_insensitive() -> None:
+    listing = replace(
+        BASE_LISTING,
+        identity=replace(
+            A180D_IDENTITY,
+            make="mercedes-benz",
+            model_variant="a180d",
+        ),
+    )
+
+    opportunities = OpportunitySearch().search([BASE_LOT], MarketSnapshot([listing]))
+
+    assert opportunities.candidates[0].comparable_supply == 1
 
 
 @pytest.mark.parametrize(
