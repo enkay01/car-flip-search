@@ -14,11 +14,11 @@ import time
 from argparse import ArgumentParser, Namespace
 from collections.abc import Sequence
 from contextlib import suppress
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TextIO, TypedDict
+from typing import Any, Protocol, TextIO, TypedDict
 from urllib.parse import urlsplit
 
+from .autotrader_url import build_autotrader_search_url
 from .capture import (
     CaptureChallengeError,
     CaptureHooks,
@@ -364,6 +364,134 @@ def _match_pair(args: Namespace, *, stdin: TextIO) -> int:
     return 0
 
 
+def _autotrader_query_values(
+    args: Namespace, *, stdin: TextIO
+) -> AutoTraderSearchParams:
+    if getattr(args, "json_input", False):
+        flags = (
+            getattr(args, "url", None),
+            getattr(args, "make", None),
+            getattr(args, "model", None),
+            getattr(args, "year", None),
+            getattr(args, "year_from", None),
+            getattr(args, "year_to", None),
+            getattr(args, "mileage", None),
+            getattr(args, "min_mileage", None),
+            getattr(args, "max_mileage", None),
+            getattr(args, "engine_size", None),
+            getattr(args, "min_engine_size", None),
+            getattr(args, "max_engine_size", None),
+            getattr(args, "fuel_type", None),
+            getattr(args, "transmission", None),
+            getattr(args, "body_types", None),
+            getattr(args, "trim", None),
+            getattr(args, "postcode", None),
+        )
+        if any(value is not None for value in flags):
+            raise ValueError("--json-input cannot be combined with search flags")
+        try:
+            payload = json.load(stdin)
+        except (json.JSONDecodeError, OSError) as error:
+            raise ValueError(f"invalid JSON input: {error}") from error
+        if not isinstance(payload, dict):
+            raise ValueError("JSON input must be an object")
+
+        body_types = payload.get("body_types")
+        if body_types is None:
+            bt = payload.get("body_type") or payload.get("body_style")
+            if bt is not None:
+                body_types = [bt] if isinstance(bt, str) else list(bt)
+        elif isinstance(body_types, str):
+            body_types = [body_types]
+
+        result: AutoTraderSearchParams = {
+            "make": payload.get("make"),
+            "model": payload.get("model_variant", payload.get("model")),
+            "year": payload.get("registration_year", payload.get("year")),
+            "year_from": payload.get("year_from"),
+            "year_to": payload.get("year_to"),
+            "mileage": payload.get("mileage"),
+            "min_mileage": payload.get("min_mileage", payload.get("minimum_mileage")),
+            "max_mileage": payload.get("max_mileage", payload.get("maximum_mileage")),
+            "engine_size": payload.get("engine_size"),
+            "min_engine_size": payload.get(
+                "min_engine_size", payload.get("minimum_badge_engine_size")
+            ),
+            "max_engine_size": payload.get(
+                "max_engine_size", payload.get("maximum_badge_engine_size")
+            ),
+            "fuel_type": payload.get("fuel_type"),
+            "transmission": payload.get("transmission"),
+            "body_types": body_types,
+            "trim": payload.get("trim", payload.get("aggregated_trim", payload.get("aggregatedTrim"))),
+            "postcode": payload.get("postcode"),
+        }
+        return result
+
+    static_result: AutoTraderSearchParams = {
+        "make": getattr(args, "make", None),
+        "model": getattr(args, "model", None),
+        "year": getattr(args, "year", None),
+        "year_from": getattr(args, "year_from", None),
+        "year_to": getattr(args, "year_to", None),
+        "mileage": getattr(args, "mileage", None),
+        "min_mileage": getattr(args, "min_mileage", None),
+        "max_mileage": getattr(args, "max_mileage", None),
+        "engine_size": getattr(args, "engine_size", None),
+        "min_engine_size": getattr(args, "min_engine_size", None),
+        "max_engine_size": getattr(args, "max_engine_size", None),
+        "fuel_type": getattr(args, "fuel_type", None),
+        "transmission": getattr(args, "transmission", None),
+        "body_types": getattr(args, "body_types", None),
+        "trim": getattr(args, "trim", None),
+        "postcode": getattr(args, "postcode", None),
+    }
+    return static_result
+
+
+def _resolve_autotrader_url(args: Namespace, *, stdin: TextIO) -> str:
+    if getattr(args, "url", None):
+        return str(args.url).strip()
+    query = _autotrader_query_values(args, stdin=stdin)
+    return build_autotrader_search_url(query)
+
+
+def _has_autotrader_query_args(args: Namespace) -> bool:
+    if getattr(args, "url", None) is not None or getattr(args, "json_input", False):
+        return True
+    return any(
+        value is not None
+        for value in (
+            getattr(args, "make", None),
+            getattr(args, "model", None),
+            getattr(args, "year", None),
+            getattr(args, "year_from", None),
+            getattr(args, "year_to", None),
+            getattr(args, "mileage", None),
+            getattr(args, "min_mileage", None),
+            getattr(args, "max_mileage", None),
+            getattr(args, "engine_size", None),
+            getattr(args, "min_engine_size", None),
+            getattr(args, "max_engine_size", None),
+            getattr(args, "fuel_type", None),
+            getattr(args, "transmission", None),
+            getattr(args, "body_types", None),
+            getattr(args, "trim", None),
+            getattr(args, "postcode", None),
+        )
+    )
+
+
+def _build_autotrader_url_cmd(args: Namespace, *, stdin: TextIO) -> int:
+    try:
+        url = _resolve_autotrader_url(args, stdin=stdin)
+    except (OSError, TypeError, ValueError) as error:
+        _write_json(_error_envelope(str(error), code="invalid_input"))
+        return 1
+    _write_json({"status": "success", "url": url}, pretty=args.pretty)
+    return 0
+
+
 def _capture_result[T_Record](
     outcome: CaptureOutcome[T_Record], capture_dir: Path
 ) -> dict[str, JsonValue]:
@@ -414,7 +542,7 @@ def _read_stdin_line(stdin: TextIO) -> str:
 
 class SupportsBrowserLocator(Protocol):
     @property
-    def first(self) -> "SupportsBrowserLocator": ...
+    def first(self) -> SupportsBrowserLocator: ...
 
     def count(self) -> int: ...
 
@@ -561,6 +689,25 @@ def _wait_for_bca_cards(
     )
 
 
+def _dismiss_autotrader_cookies(page: SupportsBrowserPage) -> None:
+    """Attempt to dismiss Auto Trader cookie consent popups gracefully."""
+    selectors = (
+        "button:has-text('Accept all')",
+        "button:has-text('Accept All')",
+        "button:has-text('Accept')",
+        "button[id*='accept']",
+        "button[aria-label*='Accept']",
+        "button[aria-label*='accept']",
+    )
+    for selector in selectors:
+        with suppress(Exception):
+            loc = page.locator(selector)
+            if loc.count() > 0 and loc.first.is_visible():
+                loc.first.click(timeout=2000)
+                page.wait_for_timeout(500)
+                return
+
+
 def _run_browser_capture(
     args: Namespace, source: SourceKind, *, stdin: TextIO
 ) -> int:
@@ -616,11 +763,18 @@ def _run_browser_capture(
                     )
                     context = browser.new_context()
                     page = context.new_page()
-                    page.goto("https://www.autotrader.co.uk", wait_until="domcontentloaded")
-                    _stderr(
-                        "Auto Trader browser opened. Run one search, then press ENTER here."
-                    )
-                    _read_stdin_line(stdin)
+
+                    if _has_autotrader_query_args(args):
+                        target_url = _resolve_autotrader_url(args, stdin=stdin)
+                        page.goto(target_url, wait_until="domcontentloaded")
+                        _dismiss_autotrader_cookies(page)
+                        _stderr(f"Auto Trader search loaded: {target_url}; starting capture.")
+                    else:
+                        page.goto("https://www.autotrader.co.uk", wait_until="domcontentloaded")
+                        _stderr(
+                            "Auto Trader browser opened. Run one search, then press ENTER here."
+                        )
+                        _read_stdin_line(stdin)
 
                 options = CaptureOptions(
                     search_name=args.search_name,
@@ -675,6 +829,60 @@ def _run_browser_capture(
     return 0
 
 
+def _add_autotrader_query_arguments(parser: ArgumentParser) -> None:
+    parser.add_argument("--url", help="Direct Auto Trader search URL to load.")
+    parser.add_argument(
+        "--json-input",
+        action="store_true",
+        help="Read vehicle/search JSON object from stdin.",
+    )
+    parser.add_argument("--make", help="Vehicle make (e.g. Audi, BMW).")
+    parser.add_argument("--model", help="Vehicle model variant (e.g. A3, 1 Series).")
+    parser.add_argument("--year", type=int, help="Vehicle registration year.")
+    parser.add_argument("--year-from", type=int, help="Earliest registration year.")
+    parser.add_argument("--year-to", type=int, help="Latest registration year.")
+    parser.add_argument(
+        "--mileage",
+        type=int,
+        help="Vehicle mileage in miles (applies ±15,000 miles window if min/max omitted).",
+    )
+    parser.add_argument(
+        "--min-mileage", type=int, help="Minimum vehicle mileage in miles."
+    )
+    parser.add_argument(
+        "--max-mileage", type=int, help="Maximum vehicle mileage in miles."
+    )
+    parser.add_argument(
+        "--engine-size",
+        help="Engine displacement in litres (e.g. 1.4).",
+    )
+    parser.add_argument(
+        "--min-engine-size",
+        help="Minimum badge engine size in litres (e.g. 1.4).",
+    )
+    parser.add_argument(
+        "--max-engine-size",
+        help="Maximum badge engine size in litres (e.g. 1.6).",
+    )
+    parser.add_argument("--fuel-type", help="Observed fuel type (e.g. Petrol, Diesel).")
+    parser.add_argument(
+        "--transmission", help="Observed transmission (e.g. Automatic, Manual)."
+    )
+    parser.add_argument(
+        "--body-type",
+        action="append",
+        dest="body_types",
+        help="Vehicle body style (e.g. Hatchback, Saloon; can be specified multiple times).",
+    )
+    parser.add_argument(
+        "--trim", help="Vehicle trim or derivative (maps to aggregatedTrim, e.g. TFSI)."
+    )
+    parser.add_argument(
+        "--postcode",
+        help="UK postcode for distance calculation (default: NG2 3JW).",
+    )
+
+
 def _build_parser() -> ArgumentParser:
     parser = ArgumentParser(
         prog="car-flip",
@@ -717,6 +925,16 @@ def _build_parser() -> ArgumentParser:
         "--pretty", action="store_true", help="Pretty-print the JSON response."
     )
     compare.set_defaults(handler=_compare_vehicle)
+
+    build_url = subparsers.add_parser(
+        "build-autotrader-url",
+        help="Construct a scoped Auto Trader search URL from vehicle criteria.",
+    )
+    _add_autotrader_query_arguments(build_url)
+    build_url.add_argument(
+        "--pretty", action="store_true", help="Pretty-print the JSON response."
+    )
+    build_url.set_defaults(handler=_build_autotrader_url_cmd)
 
     def add_capture_parser(name: str, help_text: str, source: SourceKind) -> None:
         capture = subparsers.add_parser(name, help=help_text)
@@ -770,6 +988,9 @@ def _build_parser() -> ArgumentParser:
                 default=180.0,
                 help="Positive seconds to wait for login and lot cards.",
             )
+        elif source is SourceKind.AUTOTRADER:
+            _add_autotrader_query_arguments(capture)
+
         capture.set_defaults(
             handler=lambda args, *, stdin: _run_browser_capture(
                 args, source, stdin=stdin
@@ -809,6 +1030,53 @@ def _build_parser() -> ArgumentParser:
 
 def _tool_schema(args: Namespace, *, stdin: TextIO) -> int:
     schemas = [
+        {
+            "type": "function",
+            "function": {
+                "name": "build-autotrader-url",
+                "description": (
+                    "Construct a scoped Auto Trader search URL with standard defaults "
+                    "(price-asc sort, clean condition, private/trade sellers) from vehicle "
+                    "attributes or JSON stdin."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "json_input": {
+                            "type": "boolean",
+                            "description": "Read search parameters from JSON stdin.",
+                        },
+                        "url": {"type": "string", "description": "Direct search URL."},
+                        "make": {"type": "string", "description": "Vehicle make."},
+                        "model": {"type": "string", "description": "Vehicle model variant."},
+                        "year": {"type": "integer", "description": "Registration year."},
+                        "year_from": {"type": "integer", "description": "Earliest registration year."},
+                        "year_to": {"type": "integer", "description": "Latest registration year."},
+                        "mileage": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Mileage (applies ±15,000 miles window if min/max omitted).",
+                        },
+                        "min_mileage": {"type": "integer", "minimum": 0, "description": "Minimum mileage."},
+                        "max_mileage": {"type": "integer", "minimum": 0, "description": "Maximum mileage."},
+                        "engine_size": {"type": "number", "description": "Engine displacement in litres."},
+                        "min_engine_size": {"type": "number", "description": "Minimum badge engine size."},
+                        "max_engine_size": {"type": "number", "description": "Maximum badge engine size."},
+                        "fuel_type": {"type": "string", "description": "Fuel type (e.g. Petrol, Diesel)."},
+                        "transmission": {"type": "string", "description": "Transmission (e.g. Automatic, Manual)."},
+                        "body_type": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Body types (e.g. Hatchback, Saloon).",
+                        },
+                        "trim": {"type": "string", "description": "Trim/derivative (e.g. TFSI, AMG Line)."},
+                        "postcode": {"type": "string", "description": "UK postcode (default: NG2 3JW)."},
+                        "pretty": {"type": "boolean", "description": "Pretty-print JSON."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
         {
             "type": "function",
             "function": {
@@ -954,7 +1222,11 @@ def _tool_schema(args: Namespace, *, stdin: TextIO) -> int:
             "type": "function",
             "function": {
                 "name": "search-autotrader",
-                "description": "Capture Auto Trader results through headed infinite scroll.",
+                "description": (
+                    "Capture Auto Trader listings through Playwright infinite scroll. "
+                    "When vehicle parameters or --url are provided, navigates directly to "
+                    "scoped results and captures automatically without user prompts."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -988,6 +1260,32 @@ def _tool_schema(args: Namespace, *, stdin: TextIO) -> int:
                             "default": False,
                             "description": "Run browser in headless mode (default: headed).",
                         },
+                        "url": {"type": "string", "description": "Direct search URL."},
+                        "json_input": {"type": "boolean", "description": "Read search parameters from JSON stdin."},
+                        "make": {"type": "string", "description": "Vehicle make."},
+                        "model": {"type": "string", "description": "Vehicle model variant."},
+                        "year": {"type": "integer", "description": "Registration year."},
+                        "year_from": {"type": "integer", "description": "Earliest registration year."},
+                        "year_to": {"type": "integer", "description": "Latest registration year."},
+                        "mileage": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Mileage (applies ±15,000 miles window if min/max omitted).",
+                        },
+                        "min_mileage": {"type": "integer", "minimum": 0, "description": "Minimum mileage."},
+                        "max_mileage": {"type": "integer", "minimum": 0, "description": "Maximum mileage."},
+                        "engine_size": {"type": "number", "description": "Engine displacement in litres."},
+                        "min_engine_size": {"type": "number", "description": "Minimum badge engine size."},
+                        "max_engine_size": {"type": "number", "description": "Maximum badge engine size."},
+                        "fuel_type": {"type": "string", "description": "Fuel type (e.g. Petrol, Diesel)."},
+                        "transmission": {"type": "string", "description": "Transmission (e.g. Automatic, Manual)."},
+                        "body_type": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Body types (e.g. Hatchback, Saloon).",
+                        },
+                        "trim": {"type": "string", "description": "Trim/derivative (e.g. TFSI, AMG Line)."},
+                        "postcode": {"type": "string", "description": "UK postcode (default: NG2 3JW)."},
                     },
                     "required": ["search_name"],
                     "additionalProperties": False,
