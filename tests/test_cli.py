@@ -134,12 +134,34 @@ def test_tool_schema_is_valid_json_schema(capsys: pytest.CaptureFixture[str]) ->
     assert isinstance(schemas, list)
     names = {item["function"]["name"] for item in schemas}
     assert names == {
+        "build-autotrader-url",
         "compare-vehicle",
         "search-bca",
         "search-autotrader",
         "match-pair",
     }
     expected_parameters = {
+        "build-autotrader-url": {
+            "json_input",
+            "url",
+            "make",
+            "model",
+            "year",
+            "year_from",
+            "year_to",
+            "mileage",
+            "min_mileage",
+            "max_mileage",
+            "engine_size",
+            "min_engine_size",
+            "max_engine_size",
+            "fuel_type",
+            "transmission",
+            "body_type",
+            "trim",
+            "postcode",
+            "pretty",
+        },
         "compare-vehicle": {
             "json_input",
             "make",
@@ -161,6 +183,7 @@ def test_tool_schema_is_valid_json_schema(capsys: pytest.CaptureFixture[str]) ->
             "move_delay",
             "data_dir",
             "pretty",
+            "headless",
             "catalogue_url",
             "profile_dir",
             "auth_timeout",
@@ -171,6 +194,25 @@ def test_tool_schema_is_valid_json_schema(capsys: pytest.CaptureFixture[str]) ->
             "move_delay",
             "data_dir",
             "pretty",
+            "headless",
+            "url",
+            "json_input",
+            "make",
+            "model",
+            "year",
+            "year_from",
+            "year_to",
+            "mileage",
+            "min_mileage",
+            "max_mileage",
+            "engine_size",
+            "min_engine_size",
+            "max_engine_size",
+            "fuel_type",
+            "transmission",
+            "body_type",
+            "trim",
+            "postcode",
         },
         "match-pair": {
             "bca_capture_id",
@@ -388,3 +430,113 @@ def test_match_pair_rejects_capture_path_traversal(
     envelope = json.loads(captured.out)
     assert envelope["status"] == "error"
     assert envelope["code"] == "capture_error"
+
+
+def test_browser_capture_supports_headless_flag() -> None:
+    parser = cli._build_parser()
+    bca_default = parser.parse_args(["search-bca", "--search-name", "test"])
+    assert bca_default.headless is False
+
+    bca_headless = parser.parse_args(["search-bca", "--search-name", "test", "--headless"])
+    assert bca_headless.headless is True
+
+    at_default = parser.parse_args(["search-autotrader", "--search-name", "test"])
+    assert at_default.headless is False
+
+    at_headless = parser.parse_args(["search-autotrader", "--search-name", "test", "--headless"])
+    assert at_headless.headless is True
+
+
+def test_build_autotrader_url_cli_flags(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli.main(
+        [
+            "build-autotrader-url",
+            "--make",
+            "Audi",
+            "--model",
+            "A3",
+            "--year",
+            "2018",
+            "--min-mileage",
+            "40000",
+            "--max-mileage",
+            "80000",
+            "--min-engine-size",
+            "1.4",
+            "--max-engine-size",
+            "1.6",
+            "--fuel-type",
+            "Petrol",
+            "--transmission",
+            "Automatic",
+            "--body-type",
+            "Hatchback",
+            "--body-type",
+            "Saloon",
+            "--trim",
+            "TFSI",
+            "--postcode",
+            "NG2 3JW",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    envelope = json.loads(captured.out)
+    assert envelope["status"] == "success"
+    url = envelope["url"]
+    assert "make=Audi" in url
+    assert "model=A3" in url
+    assert "aggregatedTrim=TFSI" in url
+    assert "body-type=Hatchback" in url
+    assert "body-type=Saloon" in url
+    assert "postcode=NG2+3JW" in url or "postcode=NG2%203JW" in url
+
+
+def test_build_autotrader_url_json_input(capsys: pytest.CaptureFixture[str]) -> None:
+    stdin = io.StringIO(
+        json.dumps(
+            {
+                "make": "BMW",
+                "model": "1 Series",
+                "registration_year": 2019,
+                "mileage": 50000,
+                "fuel_type": "Diesel",
+                "transmission": "Automatic",
+            }
+        )
+    )
+    exit_code = cli.main(["build-autotrader-url", "--json-input"], stdin=stdin)
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    envelope = json.loads(captured.out)
+    assert envelope["status"] == "success"
+    url = envelope["url"]
+    assert "make=BMW" in url
+    assert "year-from=2019" in url
+    assert "year-to=2019" in url
+    assert "minimum-mileage=35000" in url
+    assert "maximum-mileage=65000" in url
+
+
+def test_build_autotrader_url_direct_url(capsys: pytest.CaptureFixture[str]) -> None:
+    direct = "https://www.autotrader.co.uk/car-search?make=Ford"
+    exit_code = cli.main(["build-autotrader-url", "--url", direct])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    envelope = json.loads(captured.out)
+    assert envelope["status"] == "success"
+    assert envelope["url"] == direct
+
+
+def test_tool_schema_includes_all_commands(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli.main(["tool-schema"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    schemas = json.loads(captured.out)
+    names = {s["function"]["name"] for s in schemas}
+    assert "build-autotrader-url" in names
+    assert "search-autotrader" in names
+    assert "compare-vehicle" in names
+    assert "search-bca" in names
+    assert "match-pair" in names
+
