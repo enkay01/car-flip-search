@@ -82,30 +82,26 @@ def test_compare_vehicle_accepts_cli_flags(
 
 
 def test_compare_vehicle_accepts_json_stdin(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     market_file = tmp_path / "market.json"
     _write_market_file(market_file)
-    monkeypatch.setattr(
-        "sys.stdin",
-        io.StringIO(
-            json.dumps(
-                {
-                    "make": "Mercedes-Benz",
-                    "model_variant": "A180d",
-                    "registration_year": 2019,
-                    "mileage": 45_000,
-                    "cap_clean_price": 10_000,
-                    "trim": "AMG Line",
-                }
-            )
-        ),
+    stdin = io.StringIO(
+        json.dumps(
+            {
+                "make": "Mercedes-Benz",
+                "model_variant": "A180d",
+                "registration_year": 2019,
+                "mileage": 45_000,
+                "cap_clean_price": 10_000,
+                "trim": "AMG Line",
+            }
+        )
     )
 
     exit_code = cli.main(
-        ["compare-vehicle", "--json-input", "--market-file", str(market_file)]
+        ["compare-vehicle", "--json-input", "--market-file", str(market_file)],
+        stdin=stdin,
     )
 
     captured = capsys.readouterr()
@@ -196,10 +192,8 @@ def test_tool_schema_is_valid_json_schema(capsys: pytest.CaptureFixture[str]) ->
 
 
 def test_stdout_and_stderr_are_reserved_for_machine_and_human_output(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
-
     cli._stderr("human progress")
     cli._write_json({"status": "success"})
 

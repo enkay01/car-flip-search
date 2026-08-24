@@ -13,9 +13,10 @@ import sys
 import time
 from argparse import ArgumentParser, Namespace
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Protocol, TextIO, TypedDict
 from urllib.parse import urlsplit
 
 from .capture import (
@@ -36,6 +37,8 @@ from .model import (
     CandidateVehicle,
     CapCleanPrice,
     CoreVehicleIdentity,
+    HighMileageReference,
+    MarketComparable,
     MarketSnapshot,
     OpportunityList,
 )
@@ -47,12 +50,11 @@ from .source_acquisition import (
     normalize_model_variant,
 )
 
-try:  # Playwright is optional for users who only run comparison commands.
+PlaywrightError = RuntimeError
+sync_playwright = None
+with suppress(ImportError):  # Playwright is optional for comparison-only users.
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
-except ImportError:  # pragma: no cover - exercised when Playwright is absent
-    PlaywrightError = RuntimeError
-    sync_playwright = None
 
 
 _BCA_CARD_SELECTOR = (
@@ -60,17 +62,20 @@ _BCA_CARD_SELECTOR = (
     '[data-testid="condition-report-icon"], a[href*="/lot/"]'
 )
 _LOGIN_TOKENS = ("/login", "/signin", "/sign-in", "/logon")
+type JsonValue = (
+    str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
+)
 
 
-def _write_json(value: object, *, pretty: bool = False) -> None:
+def _write_json(value: JsonValue, *, pretty: bool = False) -> None:
     print(json.dumps(value, indent=2 if pretty else None, sort_keys=True))
 
 
-def _error_envelope(message: str, *, code: str = "error") -> dict[str, object]:
+def _error_envelope(message: str, *, code: str = "error") -> dict[str, JsonValue]:
     return {"status": "error", "error": message, "code": code}
 
 
-def _serialize_identity(identity: CoreVehicleIdentity) -> dict[str, object]:
+def _serialize_identity(identity: CoreVehicleIdentity) -> dict[str, JsonValue]:
     return {
         "make": identity.make,
         "model_variant": identity.model_variant,
@@ -82,7 +87,7 @@ def _serialize_identity(identity: CoreVehicleIdentity) -> dict[str, object]:
     }
 
 
-def _serialize_candidate(candidate: CandidateVehicle) -> dict[str, object]:
+def _serialize_candidate(candidate: CandidateVehicle) -> dict[str, JsonValue]:
     lot = candidate.auction_lot
     return {
         "id": lot.id.value,
@@ -100,7 +105,7 @@ def _serialize_candidate(candidate: CandidateVehicle) -> dict[str, object]:
     }
 
 
-def _serialize_comparable(comparable: Any) -> dict[str, object]:
+def _serialize_comparable(comparable: MarketComparable) -> dict[str, JsonValue]:
     return {
         "listing_id": comparable.listing_id.value,
         "identity": _serialize_identity(comparable.identity),
@@ -112,7 +117,7 @@ def _serialize_comparable(comparable: Any) -> dict[str, object]:
     }
 
 
-def _serialize_reference(reference: Any) -> dict[str, object]:
+def _serialize_reference(reference: HighMileageReference) -> dict[str, JsonValue]:
     return {
         "listing_id": reference.listing_id.value,
         "identity": _serialize_identity(reference.identity),
@@ -123,7 +128,7 @@ def _serialize_reference(reference: Any) -> dict[str, object]:
     }
 
 
-def _serialize_candidate_valuation(candidate: CandidateVehicle) -> dict[str, object]:
+def _serialize_candidate_valuation(candidate: CandidateVehicle) -> dict[str, JsonValue]:
     references = candidate.retail_floor_evidence.high_mileage_references
     retail_floor = candidate.retail_floor
     return {
@@ -138,7 +143,7 @@ def _serialize_candidate_valuation(candidate: CandidateVehicle) -> dict[str, obj
     }
 
 
-def _serialize_candidate_result(candidate: CandidateVehicle) -> dict[str, object]:
+def _serialize_candidate_result(candidate: CandidateVehicle) -> dict[str, JsonValue]:
     comparables = candidate.comparable_evidence.market_comparables
     references = candidate.retail_floor_evidence.high_mileage_references
     return {
@@ -149,7 +154,7 @@ def _serialize_candidate_result(candidate: CandidateVehicle) -> dict[str, object
     }
 
 
-def _serialize_opportunity_list(opportunities: OpportunityList) -> list[dict[str, object]]:
+def _serialize_opportunity_list(opportunities: OpportunityList) -> list[dict[str, JsonValue]]:
     return [
         {
             **_serialize_candidate_result(candidate),
@@ -159,7 +164,7 @@ def _serialize_opportunity_list(opportunities: OpportunityList) -> list[dict[str
     ]
 
 
-def _read_json_records(path: Path) -> list[dict[str, object]]:
+def _read_json_records(path: Path) -> list[dict[str, JsonValue]]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise ValueError(f"{path} must contain a JSON list of records")
@@ -213,9 +218,8 @@ def _capture_path(data_root: Path, source: SourceKind, capture_id: str) -> Path:
     return path
 
 
-@dataclass(frozen=True, slots=True)
-class AdHocVehicleInput:
-    """CLI or JSON fields used to build one comparison vehicle."""
+class VehicleInput(TypedDict, total=False):
+    """Sparse CLI or JSON fields used to build one comparison vehicle."""
 
     make: str | int | None
     model: str | int | None
@@ -227,27 +231,29 @@ class AdHocVehicleInput:
     transmission: str | None
 
 
-def _vehicle_values(args: Namespace) -> AdHocVehicleInput:
+def _vehicle_values(args: Namespace, *, stdin: TextIO) -> VehicleInput:
     if args.json_input:
-        flag_names = (
-            "make",
-            "model",
-            "year",
-            "mileage",
-            "cap_clean_price",
-            "trim",
-            "fuel_type",
-            "transmission",
-        )
-        if any(getattr(args, name) is not None for name in flag_names):
+        if any(
+            value is not None
+            for value in (
+                args.make,
+                args.model,
+                args.year,
+                args.mileage,
+                args.cap_clean_price,
+                args.trim,
+                args.fuel_type,
+                args.transmission,
+            )
+        ):
             raise ValueError("--json-input cannot be combined with vehicle flags")
         try:
-            payload = json.load(sys.stdin)
+            payload = json.load(stdin)
         except (json.JSONDecodeError, OSError) as error:
             raise ValueError(f"invalid JSON input: {error}") from error
         if not isinstance(payload, dict):
             raise ValueError("JSON input must be an object")
-        return AdHocVehicleInput(
+        return VehicleInput(
             make=payload.get("make"),
             model=payload.get("model_variant", payload.get("model")),
             year=payload.get("registration_year", payload.get("year")),
@@ -259,7 +265,7 @@ def _vehicle_values(args: Namespace) -> AdHocVehicleInput:
             fuel_type=payload.get("fuel_type"),
             transmission=payload.get("transmission"),
         )
-    return AdHocVehicleInput(
+    return VehicleInput(
         make=args.make,
         model=args.model,
         year=args.year,
@@ -271,13 +277,13 @@ def _vehicle_values(args: Namespace) -> AdHocVehicleInput:
     )
 
 
-def _build_ad_hoc_lot(vehicle: AdHocVehicleInput) -> AuctionLot:
+def _build_ad_hoc_lot(vehicle: VehicleInput) -> AuctionLot:
     required = {
-        "make": vehicle.make,
-        "model": vehicle.model,
-        "year": vehicle.year,
-        "mileage": vehicle.mileage,
-        "cap_clean_price": vehicle.cap_clean_price,
+        "make": vehicle["make"],
+        "model": vehicle["model"],
+        "year": vehicle["year"],
+        "mileage": vehicle["mileage"],
+        "cap_clean_price": vehicle["cap_clean_price"],
     }
     missing = [name for name, value in required.items() if value is None]
     if missing:
@@ -292,23 +298,25 @@ def _build_ad_hoc_lot(vehicle: AdHocVehicleInput) -> AuctionLot:
             model_variant=model_str,
             registration_year=int(required["year"]),
             fuel_type=(
-                str(vehicle.fuel_type) if vehicle.fuel_type is not None else None
+                str(vehicle["fuel_type"])
+                if vehicle["fuel_type"] is not None
+                else None
             ),
             transmission=(
-                str(vehicle.transmission)
-                if vehicle.transmission is not None
+                str(vehicle["transmission"])
+                if vehicle["transmission"] is not None
                 else None
             ),
         ),
         mileage=int(required["mileage"]),
         cap_clean_price=CapCleanPrice(int(required["cap_clean_price"])),
-        trim=str(vehicle.trim) if vehicle.trim is not None else None,
+        trim=str(vehicle["trim"]) if vehicle["trim"] is not None else None,
     )
 
 
-def _compare_vehicle(args: Namespace) -> int:
+def _compare_vehicle(args: Namespace, *, stdin: TextIO) -> int:
     try:
-        lot = _build_ad_hoc_lot(_vehicle_values(args))
+        lot = _build_ad_hoc_lot(_vehicle_values(args, stdin=stdin))
         snapshot = _market_snapshot_from_args(args)
         opportunities = OpportunitySearch().search((lot,), snapshot)
         candidate = opportunities.candidates[0]
@@ -337,7 +345,7 @@ def _load_pair(args: Namespace) -> OpportunityList:
     return OpportunitySearch().search(lots, snapshot)
 
 
-def _match_pair(args: Namespace) -> int:
+def _match_pair(args: Namespace, *, stdin: TextIO) -> int:
     try:
         opportunities = _load_pair(args)
     except (OSError, TypeError, ValueError, FileNotFoundError) as error:
@@ -358,7 +366,7 @@ def _match_pair(args: Namespace) -> int:
 
 def _capture_result[T_Record](
     outcome: CaptureOutcome[T_Record], capture_dir: Path
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     return {
         "capture_id": capture_dir.name,
         "source": outcome.source.value,
@@ -397,12 +405,48 @@ def _countdown_pacing(seconds: float, *, movement: str) -> None:
     _stderr("Ready.")
 
 
+def _read_stdin_line(stdin: TextIO) -> str:
+    line = stdin.readline()
+    if line == "":
+        raise EOFError("stdin closed before a response was provided")
+    return line.strip()
+
+
+class SupportsBrowserLocator(Protocol):
+    @property
+    def first(self) -> "SupportsBrowserLocator": ...
+
+    def count(self) -> int: ...
+
+    def is_visible(self) -> bool: ...
+
+    def click(self, *, timeout: int) -> None: ...
+
+
+class SupportsBrowserPage(Protocol):
+    @property
+    def url(self) -> str: ...
+
+    def content(self) -> str: ...
+
+    def evaluate(self, expression: str) -> JsonValue: ...
+
+    def goto(self, url: str, *, wait_until: str) -> None: ...
+
+    def locator(self, selector: str) -> SupportsBrowserLocator: ...
+
+    def wait_for_timeout(self, milliseconds: int) -> None: ...
+
+
 class _PlaywrightPageSource:
     """PageSource adapter for a visible BCA or Auto Trader page."""
 
-    def __init__(self, page: Any, source: SourceKind) -> None:
+    def __init__(
+        self, page: SupportsBrowserPage, source: SourceKind, *, stdin: TextIO
+    ) -> None:
         self._page = page
         self._source = source
+        self._stdin = stdin
         self._next_page_number = 2
 
     def current_html(self) -> str:
@@ -448,7 +492,7 @@ class _PlaywrightPageSource:
                 f"Click page {next_number} in the browser and press ENTER, "
                 "or type 'q' to stop."
             )
-            return input().strip().lower() != "q"
+            return _read_stdin_line(self._stdin).lower() != "q"
         except (PlaywrightError, TimeoutError, RuntimeError, ValueError) as error:
             raise CaptureChallengeError(
                 f"Could not advance the search results: {error}"
@@ -470,7 +514,9 @@ def _validate_catalogue_url(catalogue_url: str) -> None:
         raise ValueError("catalogue URL must not contain userinfo or a custom port")
 
 
-def _wait_for_bca_cards(page: Any, catalogue_url: str, timeout: float) -> None:
+def _wait_for_bca_cards(
+    page: SupportsBrowserPage, catalogue_url: str, timeout: float
+) -> None:
     """Wait for the first lot card, recovering once from a login redirect."""
     if timeout <= 0:
         raise ValueError("auth timeout must be greater than zero")
@@ -480,10 +526,11 @@ def _wait_for_bca_cards(page: Any, catalogue_url: str, timeout: float) -> None:
     catalogue_url_normalized = catalogue_url.rstrip("/").lower()
     while time.monotonic() < deadline:
         url = str(page.url).lower()
-        try:
+        challenge = None
+        with suppress(
+            AttributeError, PlaywrightError, RuntimeError, TimeoutError, ValueError
+        ):
             challenge = detect_bot_challenge_markers(page.content())
-        except (AttributeError, PlaywrightError, RuntimeError, TimeoutError, ValueError):
-            challenge = None
         if challenge is not None:
             raise CaptureChallengeError(challenge)
 
@@ -495,12 +542,10 @@ def _wait_for_bca_cards(page: Any, catalogue_url: str, timeout: float) -> None:
             )
             prompted = True
         if not on_login:
-            try:
+            with suppress(PlaywrightError, RuntimeError, ValueError):
                 locator = page.locator(_BCA_CARD_SELECTOR)
                 if locator.count() > 0:
                     return
-            except (PlaywrightError, RuntimeError, ValueError):
-                pass
             if (
                 prompted
                 and not recovered
@@ -516,7 +561,9 @@ def _wait_for_bca_cards(page: Any, catalogue_url: str, timeout: float) -> None:
     )
 
 
-def _run_browser_capture(args: Namespace, source: SourceKind) -> int:
+def _run_browser_capture(
+    args: Namespace, source: SourceKind, *, stdin: TextIO
+) -> int:
     try:
         if args.result_limit < 1:
             raise ValueError("result limit must be at least 1")
@@ -570,7 +617,7 @@ def _run_browser_capture(args: Namespace, source: SourceKind) -> int:
                     _stderr(
                         "Auto Trader browser opened. Run one search, then press ENTER here."
                     )
-                    input()
+                    _read_stdin_line(stdin)
 
                 options = CaptureOptions(
                     search_name=args.search_name,
@@ -582,7 +629,7 @@ def _run_browser_capture(args: Namespace, source: SourceKind) -> int:
                 movement = "scroll" if source is SourceKind.AUTOTRADER else "page"
                 outcome = run_capture(
                     options,
-                    _PlaywrightPageSource(page, source),
+                    _PlaywrightPageSource(page, source, stdin=stdin),
                     (
                         autotrader_capture_strategy
                         if source is SourceKind.AUTOTRADER
@@ -715,7 +762,11 @@ def _build_parser() -> ArgumentParser:
                 default=180.0,
                 help="Positive seconds to wait for login and lot cards.",
             )
-        capture.set_defaults(handler=lambda args: _run_browser_capture(args, source))
+        capture.set_defaults(
+            handler=lambda args, *, stdin: _run_browser_capture(
+                args, source, stdin=stdin
+            )
+        )
 
     add_capture_parser("search-bca", "Capture BCA lots in a visible Chrome session.", SourceKind.BCA)
     add_capture_parser("search-autotrader", "Capture Auto Trader listings with headed infinite scroll.", SourceKind.AUTOTRADER)
@@ -748,7 +799,7 @@ def _build_parser() -> ArgumentParser:
     return parser
 
 
-def _tool_schema(args: Namespace) -> int:
+def _tool_schema(args: Namespace, *, stdin: TextIO) -> int:
     schemas = [
         {
             "type": "function",
@@ -961,11 +1012,12 @@ def _tool_schema(args: Namespace) -> int:
     return 0
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, stdin: TextIO | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    input_stream = sys.stdin if stdin is None else stdin
     try:
-        return int(args.handler(args))
+        return int(args.handler(args, stdin=input_stream))
     except ValueError as error:
         _write_json(_error_envelope(str(error), code="invalid_input"))
         return 1
