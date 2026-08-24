@@ -837,6 +837,20 @@ def _observe_autotrader_registration_year(chunk: str, items: list[str]) -> int |
     return None
 
 
+def normalize_model_variant(
+    make: str | None, model_variant: str | None
+) -> str | None:
+    """Normalize source-specific Mercedes-Benz diesel suffixes for comparison."""
+    if model_variant is None or make is None or make.casefold() != "mercedes-benz":
+        return model_variant
+    lowered = model_variant.casefold()
+    if lowered.endswith("dh"):
+        return model_variant[:-2]
+    if lowered.endswith("d"):
+        return model_variant[:-1]
+    return model_variant
+
+
 def _observe_autotrader_model_variant(
     make: str | None, title_variant: str | None, subtitle: str | None
 ) -> str | None:
@@ -845,17 +859,7 @@ def _observe_autotrader_model_variant(
         r"\b([A-Za-z]{1,3}\d{2,3}[A-Za-z]{0,2})\b", subtitle or ""
     )
     variant = variant_match.group(1) if variant_match else title_variant
-    if variant is not None and make is not None and make.casefold() == "mercedes-benz":
-        lowered = variant.casefold()
-        if lowered.endswith("dh"):
-            # Auto Trader can render the C300 diesel-hybrid derivative as C300dh;
-            # BCA records the same model-level badge as C300.
-            return variant[:-2]
-        if lowered.endswith("d"):
-            # BCA emits the fuel suffix as Fuel Type (A180 + Diesel), while Auto
-            # Trader puts it on the derivative (A180d). Keep one comparison key.
-            return variant[:-1]
-    return variant
+    return normalize_model_variant(make, variant)
 
 
 def _observe_autotrader_fuel_type(items: list[str], subtitle: str | None) -> str | None:

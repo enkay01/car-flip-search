@@ -197,11 +197,31 @@ _CHALLENGE_MARKERS: tuple[tuple[str, str], ...] = (
 )
 
 
+_AUTH_CHALLENGE_MARKERS = frozenset(
+    {
+        "login required",
+        "please log in",
+        "sign in to continue",
+        "session expired",
+        "you have been logged out",
+    }
+)
+
+
 def detect_challenge_markers(html_content: str) -> str | None:
     """Return a reason when anti-bot, access-denial, or auth markers appear."""
     lower_content = html_content.lower()
     for marker, description in _CHALLENGE_MARKERS:
         if marker in lower_content:
+            return f"{description} detected — halting without bypass"
+    return None
+
+
+def detect_bot_challenge_markers(html_content: str) -> str | None:
+    """Return a reason for bot/CAPTCHA markers without treating login copy as one."""
+    lower_content = html_content.lower()
+    for marker, description in _CHALLENGE_MARKERS:
+        if marker not in _AUTH_CHALLENGE_MARKERS and marker in lower_content:
             return f"{description} detected — halting without bypass"
     return None
 
