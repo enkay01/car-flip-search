@@ -13,6 +13,7 @@ import sys
 import time
 from argparse import ArgumentParser, Namespace
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -39,7 +40,12 @@ from .model import (
     OpportunityList,
 )
 from .opportunity_search import OpportunitySearch
-from .source_acquisition import AutoTraderAcquisition, BcaAcquisition
+from .source_access import detect_bot_challenge_markers
+from .source_acquisition import (
+    AutoTraderAcquisition,
+    BcaAcquisition,
+    normalize_model_variant,
+)
 
 try:  # Playwright is optional for users who only run comparison commands.
     from playwright.sync_api import Error as PlaywrightError
@@ -207,7 +213,21 @@ def _capture_path(data_root: Path, source: SourceKind, capture_id: str) -> Path:
     return path
 
 
-def _vehicle_values(args: Namespace) -> dict[str, object | None]:
+@dataclass(frozen=True, slots=True)
+class AdHocVehicleInput:
+    """CLI or JSON fields used to build one comparison vehicle."""
+
+    make: str | int | None
+    model: str | int | None
+    year: str | int | None
+    mileage: str | int | None
+    cap_clean_price: str | int | None
+    trim: str | None
+    fuel_type: str | None
+    transmission: str | None
+
+
+def _vehicle_values(args: Namespace) -> AdHocVehicleInput:
     if args.json_input:
         flag_names = (
             "make",
@@ -227,51 +247,44 @@ def _vehicle_values(args: Namespace) -> dict[str, object | None]:
             raise ValueError(f"invalid JSON input: {error}") from error
         if not isinstance(payload, dict):
             raise ValueError("JSON input must be an object")
-        return {
-            "make": payload.get("make"),
-            "model": payload.get("model_variant", payload.get("model")),
-            "year": payload.get("registration_year", payload.get("year")),
-            "mileage": payload.get("mileage"),
-            "cap_clean_price": payload.get(
+        return AdHocVehicleInput(
+            make=payload.get("make"),
+            model=payload.get("model_variant", payload.get("model")),
+            year=payload.get("registration_year", payload.get("year")),
+            mileage=payload.get("mileage"),
+            cap_clean_price=payload.get(
                 "cap_clean_price", payload.get("cap_price")
             ),
-            "trim": payload.get("trim"),
-            "fuel_type": payload.get("fuel_type"),
-            "transmission": payload.get("transmission"),
-        }
-    return {
-        "make": args.make,
-        "model": args.model,
-        "year": args.year,
-        "mileage": args.mileage,
-        "cap_clean_price": args.cap_clean_price,
-        "trim": args.trim,
-        "fuel_type": args.fuel_type,
-        "transmission": args.transmission,
-    }
+            trim=payload.get("trim"),
+            fuel_type=payload.get("fuel_type"),
+            transmission=payload.get("transmission"),
+        )
+    return AdHocVehicleInput(
+        make=args.make,
+        model=args.model,
+        year=args.year,
+        mileage=args.mileage,
+        cap_clean_price=args.cap_clean_price,
+        trim=args.trim,
+        fuel_type=args.fuel_type,
+        transmission=args.transmission,
+    )
 
 
-def _build_ad_hoc_lot(values: dict[str, object | None]) -> AuctionLot:
+def _build_ad_hoc_lot(vehicle: AdHocVehicleInput) -> AuctionLot:
     required = {
-        "make": values.get("make"),
-        "model": values.get("model"),
-        "year": values.get("year"),
-        "mileage": values.get("mileage"),
-        "cap_clean_price": values.get("cap_clean_price"),
+        "make": vehicle.make,
+        "model": vehicle.model,
+        "year": vehicle.year,
+        "mileage": vehicle.mileage,
+        "cap_clean_price": vehicle.cap_clean_price,
     }
     missing = [name for name, value in required.items() if value is None]
     if missing:
-        raise ValueError(
-            "missing required parameters: " + ", ".join(missing)
-        )
+        raise ValueError("missing required parameters: " + ", ".join(missing))
     make_str = str(required["make"]).strip()
     model_str = str(required["model"]).strip()
-    if make_str.casefold() == "mercedes-benz":
-        lowered = model_str.casefold()
-        if lowered.endswith("dh"):
-            model_str = model_str[:-2]
-        elif lowered.endswith("d"):
-            model_str = model_str[:-1]
+    model_str = normalize_model_variant(make_str, model_str) or model_str
     return AuctionLot(
         id=AuctionLotId("AD-HOC-INPUT"),
         identity=CoreVehicleIdentity(
@@ -279,17 +292,17 @@ def _build_ad_hoc_lot(values: dict[str, object | None]) -> AuctionLot:
             model_variant=model_str,
             registration_year=int(required["year"]),
             fuel_type=(
-                str(values["fuel_type"]) if values.get("fuel_type") is not None else None
+                str(vehicle.fuel_type) if vehicle.fuel_type is not None else None
             ),
             transmission=(
-                str(values["transmission"])
-                if values.get("transmission") is not None
+                str(vehicle.transmission)
+                if vehicle.transmission is not None
                 else None
             ),
         ),
         mileage=int(required["mileage"]),
         cap_clean_price=CapCleanPrice(int(required["cap_clean_price"])),
-        trim=str(values["trim"]) if values.get("trim") is not None else None,
+        trim=str(vehicle.trim) if vehicle.trim is not None else None,
     )
 
 
@@ -464,8 +477,16 @@ def _wait_for_bca_cards(page: Any, catalogue_url: str, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     prompted = False
     recovered = False
+    catalogue_url_normalized = catalogue_url.rstrip("/").lower()
     while time.monotonic() < deadline:
         url = str(page.url).lower()
+        try:
+            challenge = detect_bot_challenge_markers(page.content())
+        except (AttributeError, PlaywrightError, RuntimeError, TimeoutError, ValueError):
+            challenge = None
+        if challenge is not None:
+            raise CaptureChallengeError(challenge)
+
         on_login = any(token in url for token in _LOGIN_TOKENS)
         if on_login and not prompted:
             _stderr(
@@ -480,7 +501,11 @@ def _wait_for_bca_cards(page: Any, catalogue_url: str, timeout: float) -> None:
                     return
             except (PlaywrightError, RuntimeError, ValueError):
                 pass
-            if prompted and not recovered and url != catalogue_url.lower():
+            if (
+                prompted
+                and not recovered
+                and url.rstrip("/") != catalogue_url_normalized
+            ):
                 _stderr("Authentication completed; returning to the catalogue URL.")
                 page.goto(catalogue_url, wait_until="domcontentloaded")
                 recovered = True
@@ -523,10 +548,17 @@ def _run_browser_capture(args: Namespace, source: SourceKind) -> int:
             browser = None
             try:
                 if source is SourceKind.BCA:
-                    context = playwright.chromium.launch_persistent_context(
-                        str(args.profile_dir), channel="chrome", headless=False
-                    )
-                    page = context.pages[0] if context.pages else context.new_page()
+                    if args.profile_dir is not None:
+                        context = playwright.chromium.launch_persistent_context(
+                            str(args.profile_dir), channel="chrome", headless=False
+                        )
+                        page = context.pages[0] if context.pages else context.new_page()
+                    else:
+                        browser = playwright.chromium.launch(
+                            channel="chrome", headless=False
+                        )
+                        context = browser.new_context()
+                        page = context.new_page()
                     page.goto(args.catalogue_url, wait_until="domcontentloaded")
                     _wait_for_bca_cards(page, args.catalogue_url, args.auth_timeout)
                     _stderr("BCA lot cards detected; starting capture.")
@@ -606,42 +638,108 @@ def _build_parser() -> ArgumentParser:
     compare = subparsers.add_parser(
         "compare-vehicle", help="Compare one vehicle against Auto Trader evidence."
     )
-    compare.add_argument("--json-input", action="store_true", help="Read vehicle JSON from stdin.")
+    compare.add_argument(
+        "--json-input", action="store_true", help="Read vehicle JSON from stdin."
+    )
     compare.add_argument("--make", help="Vehicle make.")
-    compare.add_argument("--model", help="Model variant.")
-    compare.add_argument("--year", type=int, help="Registration year.")
-    compare.add_argument("--mileage", type=int, help="Mileage in miles.")
-    compare.add_argument("--cap-clean-price", type=int, help="CAP Clean price in pounds.")
-    compare.add_argument("--trim", help="Optional trim.")
-    compare.add_argument("--fuel-type", help="Optional fuel type.")
-    compare.add_argument("--transmission", help="Optional transmission.")
-    compare.add_argument("--market-file", type=Path, help="JSON Auto Trader records file.")
-    compare.add_argument("--autotrader-capture-id", help="Saved Auto Trader capture ID.")
-    compare.add_argument("--data-root", type=Path, default=Path("data/captures"))
-    compare.add_argument("--pretty", action="store_true", help="Pretty-print JSON.")
+    compare.add_argument("--model", help="Vehicle model variant.")
+    compare.add_argument("--year", type=int, help="Vehicle registration year.")
+    compare.add_argument("--mileage", type=int, help="Vehicle mileage in miles.")
+    compare.add_argument(
+        "--cap-clean-price", type=int, help="CAP Clean price in whole pounds."
+    )
+    compare.add_argument("--trim", help="Optional vehicle trim or derivative.")
+    compare.add_argument("--fuel-type", help="Optional observed fuel type.")
+    compare.add_argument("--transmission", help="Optional observed transmission.")
+    compare.add_argument(
+        "--market-file", type=Path, help="Path to JSON Auto Trader records."
+    )
+    compare.add_argument(
+        "--autotrader-capture-id", help="Saved Auto Trader capture ID to load."
+    )
+    compare.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path("data/captures"),
+        help="Root directory containing source capture directories.",
+    )
+    compare.add_argument(
+        "--pretty", action="store_true", help="Pretty-print the JSON response."
+    )
     compare.set_defaults(handler=_compare_vehicle)
 
     def add_capture_parser(name: str, help_text: str, source: SourceKind) -> None:
         capture = subparsers.add_parser(name, help=help_text)
-        capture.add_argument("--search-name", required=True, help="Capture name.")
-        capture.add_argument("--result-limit", type=int, default=5, help="Maximum pages or scroll batches.")
-        capture.add_argument("--move-delay", type=float, default=60.0, help="Non-zero delay between movements.")
-        capture.add_argument("--data-dir", type=Path, default=Path(f"data/captures/{source.value}"))
-        capture.add_argument("--pretty", action="store_true", help="Pretty-print JSON.")
+        capture.add_argument(
+            "--search-name", required=True, help="Name used to label this capture."
+        )
+        capture.add_argument(
+            "--result-limit",
+            type=int,
+            default=5,
+            help="Maximum number of pages or scroll batches to capture.",
+        )
+        capture.add_argument(
+            "--move-delay",
+            type=float,
+            default=60.0,
+            help="Positive seconds to wait between browser movements.",
+        )
+        capture.add_argument(
+            "--data-dir",
+            type=Path,
+            default=Path(f"data/captures/{source.value}"),
+            help="Directory where this source's capture is saved.",
+        )
+        capture.add_argument(
+            "--pretty", action="store_true", help="Pretty-print the JSON response."
+        )
         if source is SourceKind.BCA:
-            capture.add_argument("--catalogue-url", default="https://www.bca.co.uk", help="BCA catalogue URL.")
-            capture.add_argument("--profile-dir", type=Path, default=Path("data/browser/bca"), help="User-controlled Chrome profile for LastPass.")
-            capture.add_argument("--auth-timeout", type=float, default=180.0, help="Seconds to wait for login and lot cards.")
+            capture.add_argument(
+                "--catalogue-url",
+                default="https://www.bca.co.uk",
+                help="HTTPS BCA catalogue URL to open and capture.",
+            )
+            capture.add_argument(
+                "--profile-dir",
+                type=Path,
+                default=None,
+                help=(
+                    "Optional Chrome user-data directory; omit it for a fresh "
+                    "ephemeral session."
+                ),
+            )
+            capture.add_argument(
+                "--auth-timeout",
+                type=float,
+                default=180.0,
+                help="Positive seconds to wait for login and lot cards.",
+            )
         capture.set_defaults(handler=lambda args: _run_browser_capture(args, source))
 
     add_capture_parser("search-bca", "Capture BCA lots in a visible Chrome session.", SourceKind.BCA)
     add_capture_parser("search-autotrader", "Capture Auto Trader listings with headed infinite scroll.", SourceKind.AUTOTRADER)
 
-    pair = subparsers.add_parser("match-pair", help="Match two saved captures into an OpportunityList.")
-    pair.add_argument("--bca-capture-id", required=True, help="Saved BCA capture ID.")
-    pair.add_argument("--autotrader-capture-id", required=True, help="Saved Auto Trader capture ID.")
-    pair.add_argument("--data-root", type=Path, default=Path("data/captures"))
-    pair.add_argument("--pretty", action="store_true", help="Pretty-print JSON.")
+    pair = subparsers.add_parser(
+        "match-pair", help="Match two saved captures into an OpportunityList."
+    )
+    pair.add_argument(
+        "--bca-capture-id", required=True, help="Saved BCA capture ID to load."
+    )
+    pair.add_argument(
+        "--autotrader-capture-id",
+        required=True,
+        help="Saved Auto Trader capture ID to load.",
+    )
+    pair.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path("data/captures"),
+        help="Root directory containing BCA and Auto Trader captures.",
+    )
+    pair.add_argument(
+        "--pretty", action="store_true", help="Pretty-print the JSON response."
+    )
     pair.set_defaults(handler=_match_pair)
 
     schema = subparsers.add_parser("tool-schema", help="Print OpenAI/Hermes tool-call JSON schemas.")
@@ -650,26 +748,79 @@ def _build_parser() -> ArgumentParser:
     return parser
 
 
-def _tool_schema(_args: Namespace) -> int:
+def _tool_schema(args: Namespace) -> int:
     schemas = [
         {
             "type": "function",
             "function": {
                 "name": "compare-vehicle",
-                "description": "Compare an ad-hoc vehicle with Auto Trader market evidence.",
+                "description": (
+                    "Compare an ad-hoc vehicle with Auto Trader market evidence. "
+                    "Vehicle fields may be supplied directly or through JSON stdin."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "make": {"type": "string"},
-                        "model": {"type": "string"},
-                        "year": {"type": "integer"},
-                        "mileage": {"type": "integer", "minimum": 0},
-                        "cap_clean_price": {"type": "integer", "minimum": 0},
-                        "trim": {"type": "string"},
-                        "fuel_type": {"type": "string"},
-                        "transmission": {"type": "string"},
+                        "json_input": {
+                            "type": "boolean",
+                            "description": "Read the vehicle object from JSON stdin.",
+                        },
+                        "make": {"type": "string", "description": "Vehicle make."},
+                        "model": {
+                            "type": "string",
+                            "description": "Vehicle model variant.",
+                        },
+                        "year": {
+                            "type": "integer",
+                            "description": "Vehicle registration year.",
+                        },
+                        "mileage": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Vehicle mileage in miles.",
+                        },
+                        "cap_clean_price": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "CAP Clean price in whole pounds.",
+                        },
+                        "trim": {
+                            "type": "string",
+                            "description": "Optional vehicle trim or derivative.",
+                        },
+                        "fuel_type": {
+                            "type": "string",
+                            "description": "Optional observed fuel type.",
+                        },
+                        "transmission": {
+                            "type": "string",
+                            "description": "Optional observed transmission.",
+                        },
+                        "market_file": {
+                            "type": "string",
+                            "description": "Path to JSON Auto Trader records.",
+                        },
+                        "autotrader_capture_id": {
+                            "type": "string",
+                            "description": "Saved Auto Trader capture ID to load.",
+                        },
+                        "data_root": {
+                            "type": "string",
+                            "default": "data/captures",
+                            "description": "Root directory containing captures.",
+                        },
+                        "pretty": {
+                            "type": "boolean",
+                            "description": "Pretty-print the JSON response.",
+                        },
                     },
-                    "required": ["make", "model", "year", "mileage", "cap_clean_price"],
+                    "required": [
+                        "make",
+                        "model",
+                        "year",
+                        "mileage",
+                        "cap_clean_price",
+                    ],
                     "additionalProperties": False,
                 },
             },
@@ -678,8 +829,61 @@ def _tool_schema(_args: Namespace) -> int:
             "type": "function",
             "function": {
                 "name": "search-bca",
-                "description": "Capture BCA lots through a visible user-assisted Chrome session.",
-                "parameters": {"type": "object", "properties": {"search_name": {"type": "string"}, "catalogue_url": {"type": "string"}, "auth_timeout": {"type": "number", "exclusiveMinimum": 0}}, "required": ["search_name"], "additionalProperties": False},
+                "description": (
+                    "Capture BCA lots through a visible, user-assisted Chrome "
+                    "session; challenges halt without bypass."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "search_name": {
+                            "type": "string",
+                            "description": "Name used to label this capture.",
+                        },
+                        "result_limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 5,
+                            "description": "Maximum pages to capture.",
+                        },
+                        "move_delay": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "default": 60,
+                            "description": "Seconds between page movements.",
+                        },
+                        "data_dir": {
+                            "type": "string",
+                            "default": "data/captures/bca",
+                            "description": "Directory where the capture is saved.",
+                        },
+                        "pretty": {
+                            "type": "boolean",
+                            "description": "Pretty-print the JSON response.",
+                        },
+                        "catalogue_url": {
+                            "type": "string",
+                            "format": "uri",
+                            "default": "https://www.bca.co.uk",
+                            "description": "HTTPS BCA catalogue URL to capture.",
+                        },
+                        "profile_dir": {
+                            "type": ["string", "null"],
+                            "description": (
+                                "Optional Chrome user-data directory; null uses "
+                                "an ephemeral session."
+                            ),
+                        },
+                        "auth_timeout": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "default": 180,
+                            "description": "Seconds to wait for login and lot cards.",
+                        },
+                    },
+                    "required": ["search_name"],
+                    "additionalProperties": False,
+                },
             },
         },
         {
@@ -687,19 +891,73 @@ def _tool_schema(_args: Namespace) -> int:
             "function": {
                 "name": "search-autotrader",
                 "description": "Capture Auto Trader results through headed infinite scroll.",
-                "parameters": {"type": "object", "properties": {"search_name": {"type": "string"}}, "required": ["search_name"], "additionalProperties": False},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "search_name": {
+                            "type": "string",
+                            "description": "Name used to label this capture.",
+                        },
+                        "result_limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 5,
+                            "description": "Maximum scroll batches to capture.",
+                        },
+                        "move_delay": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "default": 60,
+                            "description": "Seconds between scroll movements.",
+                        },
+                        "data_dir": {
+                            "type": "string",
+                            "default": "data/captures/autotrader",
+                            "description": "Directory where the capture is saved.",
+                        },
+                        "pretty": {
+                            "type": "boolean",
+                            "description": "Pretty-print the JSON response.",
+                        },
+                    },
+                    "required": ["search_name"],
+                    "additionalProperties": False,
+                },
             },
         },
         {
             "type": "function",
             "function": {
                 "name": "match-pair",
-                "description": "Match a saved BCA capture with a saved Auto Trader capture.",
-                "parameters": {"type": "object", "properties": {"bca_capture_id": {"type": "string"}, "autotrader_capture_id": {"type": "string"}}, "required": ["bca_capture_id", "autotrader_capture_id"], "additionalProperties": False},
+                "description": "Match saved BCA and Auto Trader captures.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "bca_capture_id": {
+                            "type": "string",
+                            "description": "Saved BCA capture ID to load.",
+                        },
+                        "autotrader_capture_id": {
+                            "type": "string",
+                            "description": "Saved Auto Trader capture ID to load.",
+                        },
+                        "data_root": {
+                            "type": "string",
+                            "default": "data/captures",
+                            "description": "Root directory containing captures.",
+                        },
+                        "pretty": {
+                            "type": "boolean",
+                            "description": "Pretty-print the JSON response.",
+                        },
+                    },
+                    "required": ["bca_capture_id", "autotrader_capture_id"],
+                    "additionalProperties": False,
+                },
             },
         },
     ]
-    _write_json(schemas, pretty=_args.pretty)
+    _write_json(schemas, pretty=args.pretty)
     return 0
 
 

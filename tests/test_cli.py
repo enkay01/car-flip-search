@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -89,7 +90,7 @@ def test_compare_vehicle_accepts_json_stdin(
     _write_market_file(market_file)
     monkeypatch.setattr(
         "sys.stdin",
-        __import__("io").StringIO(
+        io.StringIO(
             json.dumps(
                 {
                     "make": "Mercedes-Benz",
@@ -142,9 +143,69 @@ def test_tool_schema_is_valid_json_schema(capsys: pytest.CaptureFixture[str]) ->
         "search-autotrader",
         "match-pair",
     }
+    expected_parameters = {
+        "compare-vehicle": {
+            "json_input",
+            "make",
+            "model",
+            "year",
+            "mileage",
+            "cap_clean_price",
+            "trim",
+            "fuel_type",
+            "transmission",
+            "market_file",
+            "autotrader_capture_id",
+            "data_root",
+            "pretty",
+        },
+        "search-bca": {
+            "search_name",
+            "result_limit",
+            "move_delay",
+            "data_dir",
+            "pretty",
+            "catalogue_url",
+            "profile_dir",
+            "auth_timeout",
+        },
+        "search-autotrader": {
+            "search_name",
+            "result_limit",
+            "move_delay",
+            "data_dir",
+            "pretty",
+        },
+        "match-pair": {
+            "bca_capture_id",
+            "autotrader_capture_id",
+            "data_root",
+            "pretty",
+        },
+    }
     for item in schemas:
         assert item["type"] == "function"
-        assert item["function"]["parameters"]["type"] == "object"
+        function = item["function"]
+        parameters = function["parameters"]
+        assert parameters["type"] == "object"
+        assert set(parameters["properties"]) == expected_parameters[function["name"]]
+        assert all(
+            "description" in property_schema
+            for property_schema in parameters["properties"].values()
+        )
+
+
+def test_stdout_and_stderr_are_reserved_for_machine_and_human_output(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
+
+    cli._stderr("human progress")
+    cli._write_json({"status": "success"})
+
+    captured = capsys.readouterr()
+    assert captured.out == '{"status": "success"}\n'
+    assert captured.err == "human progress\n"
 
 
 def test_bca_wait_starts_when_lot_card_dom_appears() -> None:
@@ -172,6 +233,9 @@ def test_bca_wait_enforces_auth_timeout() -> None:
     class Page:
         url = "https://www.bca.co.uk/login"
 
+        def content(self) -> str:
+            return "<html><body>login form</body></html>"
+
         def locator(self, _selector: str) -> Locator:
             return Locator()
 
@@ -180,6 +244,64 @@ def test_bca_wait_enforces_auth_timeout() -> None:
 
     with pytest.raises(TimeoutError, match="auth timeout"):
         cli._wait_for_bca_cards(Page(), "https://www.bca.co.uk/catalogue", 0.001)
+
+
+def test_bca_wait_halts_immediately_on_bot_challenge() -> None:
+    class Page:
+        url = "https://www.bca.co.uk/catalogue"
+
+        def content(self) -> str:
+            return "<title>Access Denied - CAPTCHA</title>"
+
+        def locator(self, _selector: str) -> object:
+            raise AssertionError("challenge should be detected before card lookup")
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            raise AssertionError("challenge should not wait for auth timeout")
+
+    with pytest.raises(cli.CaptureChallengeError, match="CAPTCHA"):
+        cli._wait_for_bca_cards(Page(), "https://www.bca.co.uk/catalogue", 30)
+
+
+def test_bca_wait_returns_to_deep_catalogue_after_login() -> None:
+    class Locator:
+        def __init__(self, page: Page) -> None:
+            self._page = page
+
+        def count(self) -> int:
+            return int(self._page.url.endswith("/catalogue"))
+
+    class Page:
+        url = "https://www.bca.co.uk/login"
+
+        def __init__(self) -> None:
+            self.goto_calls: list[str] = []
+            self.waits = 0
+
+        def content(self) -> str:
+            return "<html><body>login form</body></html>"
+
+        def locator(self, _selector: str) -> Locator:
+            return Locator(self)
+
+        def goto(self, url: str, *, wait_until: str) -> None:
+            assert wait_until == "domcontentloaded"
+            self.goto_calls.append(url)
+            self.url = url
+
+        def wait_for_timeout(self, _milliseconds: int) -> None:
+            self.waits += 1
+            if self.waits == 1:
+                self.url = "https://www.bca.co.uk/dashboard"
+
+    page = Page()
+    cli._wait_for_bca_cards(page, "https://www.bca.co.uk/catalogue", 1)
+    assert page.goto_calls == ["https://www.bca.co.uk/catalogue"]
+
+
+def test_bca_profile_defaults_to_ephemeral_session() -> None:
+    args = cli._build_parser().parse_args(["search-bca", "--search-name", "daily"])
+    assert args.profile_dir is None
 
 
 def _write_pair_captures(data_root: Path) -> None:
