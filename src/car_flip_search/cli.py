@@ -594,15 +594,16 @@ def _run_browser_capture(
             context = None
             browser = None
             try:
+                headless = bool(getattr(args, "headless", False))
                 if source is SourceKind.BCA:
                     if args.profile_dir is not None:
                         context = playwright.chromium.launch_persistent_context(
-                            str(args.profile_dir), channel="chrome", headless=False
+                            str(args.profile_dir), channel="chrome", headless=headless
                         )
                         page = context.pages[0] if context.pages else context.new_page()
                     else:
                         browser = playwright.chromium.launch(
-                            channel="chrome", headless=False
+                            channel="chrome", headless=headless
                         )
                         context = browser.new_context()
                         page = context.new_page()
@@ -610,7 +611,9 @@ def _run_browser_capture(
                     _wait_for_bca_cards(page, args.catalogue_url, args.auth_timeout)
                     _stderr("BCA lot cards detected; starting capture.")
                 else:
-                    browser = playwright.chromium.launch(channel="chrome", headless=False)
+                    browser = playwright.chromium.launch(
+                        channel="chrome", headless=headless
+                    )
                     context = browser.new_context()
                     page = context.new_page()
                     page.goto("https://www.autotrader.co.uk", wait_until="domcontentloaded")
@@ -740,6 +743,11 @@ def _build_parser() -> ArgumentParser:
         )
         capture.add_argument(
             "--pretty", action="store_true", help="Pretty-print the JSON response."
+        )
+        capture.add_argument(
+            "--headless",
+            action="store_true",
+            help="Run browser in headless mode (default: headed).",
         )
         if source is SourceKind.BCA:
             capture.add_argument(
@@ -912,6 +920,11 @@ def _tool_schema(args: Namespace, *, stdin: TextIO) -> int:
                             "type": "boolean",
                             "description": "Pretty-print the JSON response.",
                         },
+                        "headless": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Run browser in headless mode (default: headed).",
+                        },
                         "catalogue_url": {
                             "type": "string",
                             "format": "uri",
@@ -969,6 +982,11 @@ def _tool_schema(args: Namespace, *, stdin: TextIO) -> int:
                         "pretty": {
                             "type": "boolean",
                             "description": "Pretty-print the JSON response.",
+                        },
+                        "headless": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Run browser in headless mode (default: headed).",
                         },
                     },
                     "required": ["search_name"],

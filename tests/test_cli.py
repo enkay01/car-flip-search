@@ -161,6 +161,7 @@ def test_tool_schema_is_valid_json_schema(capsys: pytest.CaptureFixture[str]) ->
             "move_delay",
             "data_dir",
             "pretty",
+            "headless",
             "catalogue_url",
             "profile_dir",
             "auth_timeout",
@@ -171,6 +172,7 @@ def test_tool_schema_is_valid_json_schema(capsys: pytest.CaptureFixture[str]) ->
             "move_delay",
             "data_dir",
             "pretty",
+            "headless",
         },
         "match-pair": {
             "bca_capture_id",
@@ -388,3 +390,18 @@ def test_match_pair_rejects_capture_path_traversal(
     envelope = json.loads(captured.out)
     assert envelope["status"] == "error"
     assert envelope["code"] == "capture_error"
+
+
+def test_browser_capture_supports_headless_flag() -> None:
+    parser = cli._build_parser()
+    bca_default = parser.parse_args(["search-bca", "--search-name", "test"])
+    assert bca_default.headless is False
+
+    bca_headless = parser.parse_args(["search-bca", "--search-name", "test", "--headless"])
+    assert bca_headless.headless is True
+
+    at_default = parser.parse_args(["search-autotrader", "--search-name", "test"])
+    assert at_default.headless is False
+
+    at_headless = parser.parse_args(["search-autotrader", "--search-name", "test", "--headless"])
+    assert at_headless.headless is True
