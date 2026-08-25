@@ -837,9 +837,7 @@ def _observe_autotrader_registration_year(chunk: str, items: list[str]) -> int |
     return None
 
 
-def normalize_model_variant(
-    make: str | None, model_variant: str | None
-) -> str | None:
+def normalize_model_variant(make: str | None, model_variant: str | None) -> str | None:
     """Normalize source-specific Mercedes-Benz diesel suffixes for comparison."""
     if model_variant is None or make is None or make.casefold() != "mercedes-benz":
         return model_variant

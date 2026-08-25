@@ -15,28 +15,44 @@ def _write_market_file(path: Path) -> None:
     records = [
         {
             "id": "at-1",
-            "identity": {"make": "Mercedes-Benz", "model_variant": "A180d", "registration_year": 2019},
+            "identity": {
+                "make": "Mercedes-Benz",
+                "model_variant": "A180d",
+                "registration_year": 2019,
+            },
             "mileage": 42_000,
             "cash_price": 13_200,
             "seller_type": "dealer",
         },
         {
             "id": "at-2",
-            "identity": {"make": "Mercedes-Benz", "model_variant": "A180d", "registration_year": 2019},
+            "identity": {
+                "make": "Mercedes-Benz",
+                "model_variant": "A180d",
+                "registration_year": 2019,
+            },
             "mileage": 48_000,
             "cash_price": 12_950,
             "seller_type": "private",
         },
         {
             "id": "at-3",
-            "identity": {"make": "Mercedes-Benz", "model_variant": "A180d", "registration_year": 2019},
+            "identity": {
+                "make": "Mercedes-Benz",
+                "model_variant": "A180d",
+                "registration_year": 2019,
+            },
             "mileage": 75_000,
             "cash_price": 11_800,
             "seller_type": "dealer",
         },
         {
             "id": "at-4",
-            "identity": {"make": "Mercedes-Benz", "model_variant": "A180d", "registration_year": 2019},
+            "identity": {
+                "make": "Mercedes-Benz",
+                "model_variant": "A180d",
+                "registration_year": 2019,
+            },
             "mileage": 82_000,
             "cash_price": 11_200,
             "seller_type": "private",
@@ -407,7 +423,12 @@ def test_match_pair_loads_saved_captures(
     envelope = json.loads(captured.out)
     assert envelope["status"] == "success"
     assert len(envelope["opportunity_list"]["candidates"]) == 1
-    assert envelope["opportunity_list"]["candidates"][0]["valuation"]["price_spread_pounds"] == 1_995
+    assert (
+        envelope["opportunity_list"]["candidates"][0]["valuation"][
+            "price_spread_pounds"
+        ]
+        == 1_995
+    )
 
 
 def test_match_pair_rejects_capture_path_traversal(
@@ -437,13 +458,17 @@ def test_browser_capture_supports_headless_flag() -> None:
     bca_default = parser.parse_args(["search-bca", "--search-name", "test"])
     assert bca_default.headless is False
 
-    bca_headless = parser.parse_args(["search-bca", "--search-name", "test", "--headless"])
+    bca_headless = parser.parse_args(
+        ["search-bca", "--search-name", "test", "--headless"]
+    )
     assert bca_headless.headless is True
 
     at_default = parser.parse_args(["search-autotrader", "--search-name", "test"])
     assert at_default.headless is False
 
-    at_headless = parser.parse_args(["search-autotrader", "--search-name", "test", "--headless"])
+    at_headless = parser.parse_args(
+        ["search-autotrader", "--search-name", "test", "--headless"]
+    )
     assert at_headless.headless is True
 
 
@@ -539,4 +564,3 @@ def test_tool_schema_includes_all_commands(capsys: pytest.CaptureFixture[str]) -
     assert "compare-vehicle" in names
     assert "search-bca" in names
     assert "match-pair" in names
-
