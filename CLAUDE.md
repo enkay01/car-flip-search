@@ -40,12 +40,12 @@ Auto Trader requires no login for car searches. Always use the CLI directly:
      ```
    - Compare via CLI (`car-flip compare-vehicle`) or inspect in UI (`uv run dev`).
 
-3. **Workflow 3: Headless comparison (automated agent loop)**:
+3. **Workflow 3: Automated headed comparison (agent loop)**:
    - Convert BCA vehicle details to JSON.
-   - Run headless Auto Trader capture:
+   - Run headed Auto Trader capture:
      ```bash
      uv run car-flip search-autotrader \
-       --search-name "Audi A3 2018 Headless" \
+       --search-name "Audi A3 2018 Automated" \
        --make Audi \
        --model A3 \
        --year 2018 \
@@ -53,7 +53,6 @@ Auto Trader requires no login for car searches. Always use the CLI directly:
        --fuel-type Petrol \
        --transmission Automatic \
        --trim TFSI \
-       --headless \
        --pretty
      ```
    - Evaluate against captured evidence:

@@ -40,7 +40,7 @@ uv run car-flip search-bca --search-name "A-Class Petrol" --result-limit 5 --mov
 
 ### Capture Auto Trader search results
 
-Runs scoped infinite scroll capture in headed or headless mode:
+Runs scoped infinite scroll capture in a visible browser session (supports `--headless`):
 
 ```bash
 uv run car-flip search-autotrader \
@@ -51,8 +51,7 @@ uv run car-flip search-autotrader \
   --mileage 60000 \
   --fuel-type Petrol \
   --transmission Automatic \
-  --trim TFSI \
-  --headless
+  --trim TFSI
 ```
 
 ### Evaluate single vehicle against market evidence

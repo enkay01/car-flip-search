@@ -279,9 +279,9 @@ Run `uv run dev` and review the candidate vehicle next to its captured Auto Trad
 
 ---
 
-## Workflow 3: Headless comparison
+## Workflow 3: Automated headed comparison
 
-The agent runs this workflow without user input. It takes a screenshot or vehicle payload, turns it into structured JSON, captures Auto Trader evidence in the background, runs the comparison calculation, and returns valuation signals to the user.
+The agent runs this workflow autonomously in a visible browser session. It takes a screenshot or vehicle payload, converts it into structured JSON, launches a headed browser to capture Auto Trader evidence automatically without manual interaction, runs the comparison calculation, and returns valuation signals to the user.
 
 ### Step 1: Convert screenshot to vehicle JSON
 
@@ -300,13 +300,13 @@ Read the BCA lot screenshot and produce the normalized vehicle object:
 }
 ```
 
-### Step 2: agent runs the headless Auto Trader capture
+### Step 2: Agent runs the headed Auto Trader capture
 
-Run the capture command with `--headless`:
+Run the capture command with vehicle criteria:
 
 ```bash
 uv run car-flip search-autotrader \
-  --search-name "Audi A3 2018 Headless" \
+  --search-name "Audi A3 2018 Automated" \
   --make "Audi" \
   --model "A3" \
   --year 2018 \
@@ -314,12 +314,11 @@ uv run car-flip search-autotrader \
   --fuel-type "Petrol" \
   --transmission "Automatic" \
   --trim "TFSI" \
-  --headless \
   --result-limit 3 \
   --move-delay 60
 ```
 
-The browser runs without opening a window on the desktop. The command returns:
+Playwright opens a visible Chrome window directly to the scoped search URL. The tool dismisses cookie consent dialogs automatically, captures listings across infinite scroll batches with 60 second pacing, and saves the output to disk without requiring user input. The command returns:
 
 ```json
 {
@@ -328,7 +327,7 @@ The browser runs without opening a window on the desktop. The command returns:
   "pages_captured": 3,
   "records_captured": 45,
   "records_skipped": 0,
-  "search_name": "Audi A3 2018 Headless",
+  "search_name": "Audi A3 2018 Automated",
   "source": "autotrader",
   "status": "success",
   "stop_reason": "completed"
