@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Protocol, TextIO, TypedDict
 from urllib.parse import urlsplit
 
-from .autotrader_url import build_autotrader_search_url
+from .autotrader_url import AutoTraderSearchParams, build_autotrader_search_url
 from .capture import (
     CaptureChallengeError,
     CaptureHooks,
@@ -154,7 +154,9 @@ def _serialize_candidate_result(candidate: CandidateVehicle) -> dict[str, JsonVa
     }
 
 
-def _serialize_opportunity_list(opportunities: OpportunityList) -> list[dict[str, JsonValue]]:
+def _serialize_opportunity_list(
+    opportunities: OpportunityList,
+) -> list[dict[str, JsonValue]]:
     return [
         {
             **_serialize_candidate_result(candidate),
@@ -180,11 +182,15 @@ def _market_snapshot_from_args(args: Namespace) -> MarketSnapshot:
         )
 
     source_dir = args.data_root / SourceKind.AUTOTRADER.value
-    capture_dirs = sorted(
-        (path for path in source_dir.iterdir() if path.is_dir()),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    ) if source_dir.is_dir() else []
+    capture_dirs = (
+        sorted(
+            (path for path in source_dir.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if source_dir.is_dir()
+        else []
+    )
     for capture_dir in capture_dirs:
         records_path = capture_dir / "records.json"
         if records_path.is_file():
@@ -258,9 +264,7 @@ def _vehicle_values(args: Namespace, *, stdin: TextIO) -> VehicleInput:
             model=payload.get("model_variant", payload.get("model")),
             year=payload.get("registration_year", payload.get("year")),
             mileage=payload.get("mileage"),
-            cap_clean_price=payload.get(
-                "cap_clean_price", payload.get("cap_price")
-            ),
+            cap_clean_price=payload.get("cap_clean_price", payload.get("cap_price")),
             trim=payload.get("trim"),
             fuel_type=payload.get("fuel_type"),
             transmission=payload.get("transmission"),
@@ -298,9 +302,7 @@ def _build_ad_hoc_lot(vehicle: VehicleInput) -> AuctionLot:
             model_variant=model_str,
             registration_year=int(required["year"]),
             fuel_type=(
-                str(vehicle["fuel_type"])
-                if vehicle["fuel_type"] is not None
-                else None
+                str(vehicle["fuel_type"]) if vehicle["fuel_type"] is not None else None
             ),
             transmission=(
                 str(vehicle["transmission"])
@@ -423,7 +425,9 @@ def _autotrader_query_values(
             "fuel_type": payload.get("fuel_type"),
             "transmission": payload.get("transmission"),
             "body_types": body_types,
-            "trim": payload.get("trim", payload.get("aggregated_trim", payload.get("aggregatedTrim"))),
+            "trim": payload.get(
+                "trim", payload.get("aggregated_trim", payload.get("aggregatedTrim"))
+            ),
             "postcode": payload.get("postcode"),
         }
         return result
@@ -586,7 +590,9 @@ class _PlaywrightPageSource:
             self._page.wait_for_timeout(1000)
             return self._page.content()
         except (PlaywrightError, TimeoutError, RuntimeError, ValueError) as error:
-            raise CaptureChallengeError(f"Could not read the current page: {error}") from error
+            raise CaptureChallengeError(
+                f"Could not read the current page: {error}"
+            ) from error
 
     def advance(self) -> bool:
         self._raise_if_login_redirect()
@@ -636,9 +642,16 @@ class _PlaywrightPageSource:
 
 def _validate_catalogue_url(catalogue_url: str) -> None:
     parsed = urlsplit(catalogue_url)
-    if parsed.scheme != "https" or parsed.hostname not in {"bca.co.uk", "www.bca.co.uk"}:
+    if parsed.scheme != "https" or parsed.hostname not in {
+        "bca.co.uk",
+        "www.bca.co.uk",
+    }:
         raise ValueError("catalogue URL must use HTTPS and a bca.co.uk hostname")
-    if parsed.username is not None or parsed.password is not None or parsed.port is not None:
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+    ):
         raise ValueError("catalogue URL must not contain userinfo or a custom port")
 
 
@@ -708,9 +721,7 @@ def _dismiss_autotrader_cookies(page: SupportsBrowserPage) -> None:
                 return
 
 
-def _run_browser_capture(
-    args: Namespace, source: SourceKind, *, stdin: TextIO
-) -> int:
+def _run_browser_capture(args: Namespace, source: SourceKind, *, stdin: TextIO) -> int:
     try:
         if args.result_limit < 1:
             raise ValueError("result limit must be at least 1")
@@ -768,9 +779,14 @@ def _run_browser_capture(
                         target_url = _resolve_autotrader_url(args, stdin=stdin)
                         page.goto(target_url, wait_until="domcontentloaded")
                         _dismiss_autotrader_cookies(page)
-                        _stderr(f"Auto Trader search loaded: {target_url}; starting capture.")
+                        _stderr(
+                            f"Auto Trader search loaded: {target_url}; starting capture."
+                        )
                     else:
-                        page.goto("https://www.autotrader.co.uk", wait_until="domcontentloaded")
+                        page.goto(
+                            "https://www.autotrader.co.uk",
+                            wait_until="domcontentloaded",
+                        )
                         _stderr(
                             "Auto Trader browser opened. Run one search, then press ENTER here."
                         )
@@ -807,7 +823,13 @@ def _run_browser_capture(
     except (EOFError, KeyboardInterrupt):
         _write_json(_error_envelope("capture interrupted by user", code="interrupted"))
         return 1
-    except (OSError, PlaywrightError, TimeoutError, ValueError, CaptureChallengeError) as error:
+    except (
+        OSError,
+        PlaywrightError,
+        TimeoutError,
+        ValueError,
+        CaptureChallengeError,
+    ) as error:
         _write_json(_error_envelope(str(error), code="capture_error"))
         return 1
 
@@ -816,7 +838,8 @@ def _run_browser_capture(
         return 1
     result_status = (
         "stopped"
-        if outcome.stop_reason in {
+        if outcome.stop_reason
+        in {
             StopReason.CHALLENGE_DETECTED,
             StopReason.USER_STOPPED,
         }
@@ -997,8 +1020,14 @@ def _build_parser() -> ArgumentParser:
             )
         )
 
-    add_capture_parser("search-bca", "Capture BCA lots in a visible Chrome session.", SourceKind.BCA)
-    add_capture_parser("search-autotrader", "Capture Auto Trader listings with headed infinite scroll.", SourceKind.AUTOTRADER)
+    add_capture_parser(
+        "search-bca", "Capture BCA lots in a visible Chrome session.", SourceKind.BCA
+    )
+    add_capture_parser(
+        "search-autotrader",
+        "Capture Auto Trader listings with headed infinite scroll.",
+        SourceKind.AUTOTRADER,
+    )
 
     pair = subparsers.add_parser(
         "match-pair", help="Match two saved captures into an OpportunityList."
@@ -1022,7 +1051,9 @@ def _build_parser() -> ArgumentParser:
     )
     pair.set_defaults(handler=_match_pair)
 
-    schema = subparsers.add_parser("tool-schema", help="Print OpenAI/Hermes tool-call JSON schemas.")
+    schema = subparsers.add_parser(
+        "tool-schema", help="Print OpenAI/Hermes tool-call JSON schemas."
+    )
     schema.add_argument("--pretty", action="store_true", help="Pretty-print JSON.")
     schema.set_defaults(handler=_tool_schema)
     return parser
@@ -1048,30 +1079,74 @@ def _tool_schema(args: Namespace, *, stdin: TextIO) -> int:
                         },
                         "url": {"type": "string", "description": "Direct search URL."},
                         "make": {"type": "string", "description": "Vehicle make."},
-                        "model": {"type": "string", "description": "Vehicle model variant."},
-                        "year": {"type": "integer", "description": "Registration year."},
-                        "year_from": {"type": "integer", "description": "Earliest registration year."},
-                        "year_to": {"type": "integer", "description": "Latest registration year."},
+                        "model": {
+                            "type": "string",
+                            "description": "Vehicle model variant.",
+                        },
+                        "year": {
+                            "type": "integer",
+                            "description": "Registration year.",
+                        },
+                        "year_from": {
+                            "type": "integer",
+                            "description": "Earliest registration year.",
+                        },
+                        "year_to": {
+                            "type": "integer",
+                            "description": "Latest registration year.",
+                        },
                         "mileage": {
                             "type": "integer",
                             "minimum": 0,
                             "description": "Mileage (applies ±15,000 miles window if min/max omitted).",
                         },
-                        "min_mileage": {"type": "integer", "minimum": 0, "description": "Minimum mileage."},
-                        "max_mileage": {"type": "integer", "minimum": 0, "description": "Maximum mileage."},
-                        "engine_size": {"type": "number", "description": "Engine displacement in litres."},
-                        "min_engine_size": {"type": "number", "description": "Minimum badge engine size."},
-                        "max_engine_size": {"type": "number", "description": "Maximum badge engine size."},
-                        "fuel_type": {"type": "string", "description": "Fuel type (e.g. Petrol, Diesel)."},
-                        "transmission": {"type": "string", "description": "Transmission (e.g. Automatic, Manual)."},
+                        "min_mileage": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Minimum mileage.",
+                        },
+                        "max_mileage": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Maximum mileage.",
+                        },
+                        "engine_size": {
+                            "type": "number",
+                            "description": "Engine displacement in litres.",
+                        },
+                        "min_engine_size": {
+                            "type": "number",
+                            "description": "Minimum badge engine size.",
+                        },
+                        "max_engine_size": {
+                            "type": "number",
+                            "description": "Maximum badge engine size.",
+                        },
+                        "fuel_type": {
+                            "type": "string",
+                            "description": "Fuel type (e.g. Petrol, Diesel).",
+                        },
+                        "transmission": {
+                            "type": "string",
+                            "description": "Transmission (e.g. Automatic, Manual).",
+                        },
                         "body_type": {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Body types (e.g. Hatchback, Saloon).",
                         },
-                        "trim": {"type": "string", "description": "Trim/derivative (e.g. TFSI, AMG Line)."},
-                        "postcode": {"type": "string", "description": "UK postcode (default: NG2 3JW)."},
-                        "pretty": {"type": "boolean", "description": "Pretty-print JSON."},
+                        "trim": {
+                            "type": "string",
+                            "description": "Trim/derivative (e.g. TFSI, AMG Line).",
+                        },
+                        "postcode": {
+                            "type": "string",
+                            "description": "UK postcode (default: NG2 3JW).",
+                        },
+                        "pretty": {
+                            "type": "boolean",
+                            "description": "Pretty-print JSON.",
+                        },
                     },
                     "additionalProperties": False,
                 },
@@ -1261,31 +1336,75 @@ def _tool_schema(args: Namespace, *, stdin: TextIO) -> int:
                             "description": "Run browser in headless mode (default: headed).",
                         },
                         "url": {"type": "string", "description": "Direct search URL."},
-                        "json_input": {"type": "boolean", "description": "Read search parameters from JSON stdin."},
+                        "json_input": {
+                            "type": "boolean",
+                            "description": "Read search parameters from JSON stdin.",
+                        },
                         "make": {"type": "string", "description": "Vehicle make."},
-                        "model": {"type": "string", "description": "Vehicle model variant."},
-                        "year": {"type": "integer", "description": "Registration year."},
-                        "year_from": {"type": "integer", "description": "Earliest registration year."},
-                        "year_to": {"type": "integer", "description": "Latest registration year."},
+                        "model": {
+                            "type": "string",
+                            "description": "Vehicle model variant.",
+                        },
+                        "year": {
+                            "type": "integer",
+                            "description": "Registration year.",
+                        },
+                        "year_from": {
+                            "type": "integer",
+                            "description": "Earliest registration year.",
+                        },
+                        "year_to": {
+                            "type": "integer",
+                            "description": "Latest registration year.",
+                        },
                         "mileage": {
                             "type": "integer",
                             "minimum": 0,
                             "description": "Mileage (applies ±15,000 miles window if min/max omitted).",
                         },
-                        "min_mileage": {"type": "integer", "minimum": 0, "description": "Minimum mileage."},
-                        "max_mileage": {"type": "integer", "minimum": 0, "description": "Maximum mileage."},
-                        "engine_size": {"type": "number", "description": "Engine displacement in litres."},
-                        "min_engine_size": {"type": "number", "description": "Minimum badge engine size."},
-                        "max_engine_size": {"type": "number", "description": "Maximum badge engine size."},
-                        "fuel_type": {"type": "string", "description": "Fuel type (e.g. Petrol, Diesel)."},
-                        "transmission": {"type": "string", "description": "Transmission (e.g. Automatic, Manual)."},
+                        "min_mileage": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Minimum mileage.",
+                        },
+                        "max_mileage": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Maximum mileage.",
+                        },
+                        "engine_size": {
+                            "type": "number",
+                            "description": "Engine displacement in litres.",
+                        },
+                        "min_engine_size": {
+                            "type": "number",
+                            "description": "Minimum badge engine size.",
+                        },
+                        "max_engine_size": {
+                            "type": "number",
+                            "description": "Maximum badge engine size.",
+                        },
+                        "fuel_type": {
+                            "type": "string",
+                            "description": "Fuel type (e.g. Petrol, Diesel).",
+                        },
+                        "transmission": {
+                            "type": "string",
+                            "description": "Transmission (e.g. Automatic, Manual).",
+                        },
                         "body_type": {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Body types (e.g. Hatchback, Saloon).",
                         },
-                        "trim": {"type": "string", "description": "Trim/derivative (e.g. TFSI, AMG Line)."},
-                        "postcode": {"type": "string", "description": "UK postcode (default: NG2 3JW)."},
+                        "trim": {
+                            "type": "string",
+                            "description": "Trim/derivative (e.g. TFSI, AMG Line).",
+                        },
+                        "postcode": {
+                            "type": "string",
+                            "description": "UK postcode (default: NG2 3JW).",
+                        },
                     },
                     "required": ["search_name"],
                     "additionalProperties": False,

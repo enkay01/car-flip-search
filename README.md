@@ -1,76 +1,82 @@
 # Car Flip Search
 
-A Python library for identifying potential vehicle resale opportunities from
-BCA Auction Lots and a live Auto Trader Market Snapshot.
+A Python application and library for identifying resale opportunities by comparing BCA Auction Lots against live Auto Trader market evidence.
 
-## Usage
+## Installation and setup
 
-```python
-from car_flip_search import OpportunitySearch
+### Prerequisites
 
-opportunities = OpportunitySearch().search(auction_lots, market_snapshot)
-```
+- Python 3.13 or newer
+- `uv` package manager
+- Google Chrome or Chromium
 
-`auction_lots` is an iterable of `AuctionLot` values and `market_snapshot` is
-a `MarketSnapshot`. The result is an `OpportunityList` of comparison-eligible
-candidates and their valuation signals.
-
-## Capturing BCA search results
-
-The BCA capture command opens a visible browser with a fresh session, lets you
-log in and run one search, then captures the search results for Opportunity
-Search. It never sees or stores your BCA credentials.
+### Setup
 
 ```bash
-uv run python tools/bca_headed_fetch.py --search-name "A-Class Petrol" --result-limit 5 --move-delay 60
+git clone https://github.com/enkay01/car-flip-search.git
+cd car-flip-search
+uv sync --extra browser
+uv run playwright install chromium
 ```
 
-Each run saves a never-overwritten capture (with the search name and a unique
-capture ID) under `data/captures/bca/<capture_id>/`, keeping the original page
-data, the valid parsed car records, and a skipped-car log. A zero movement
-delay is rejected; a capture that stops early is still saved and usable.
+## Documentation
 
-## Capturing Auto Trader search results
+Full operational workflows, domain definitions, and agent usage guides live in the documentation:
 
-The Auto Trader capture command opens a visible browser with a fresh session
-and captures one search for Opportunity Search. Auto Trader does not require
-login for this workflow, so no credentials are configured, requested, or
-stored.
+- [Application workflows](file:///d:/stroo/Documents/GitHub/car-flip-search/docs/workflows.md): Detailed guide for the end-to-end human supervised flow, quick compare flow, and headless comparison.
+- [Domain model](file:///d:/stroo/Documents/GitHub/car-flip-search/CONTEXT.md): Glossary and invariants for auction lots, market comparables, and valuation signals.
+- [Source access specification](file:///d:/stroo/Documents/GitHub/car-flip-search/docs/source-access.md): Permitted access policies and session boundaries.
+- [Agent rules](file:///d:/stroo/Documents/GitHub/car-flip-search/AGENTS.md): CLI workflows and instructions for automated coding agents.
+
+## Quick CLI reference
+
+### Capture BCA search results
+
+Opens a visible browser for manual login and search navigation, then captures up to the specified page limit:
 
 ```bash
-uv run python tools/autotrader_headed_fetch.py --search-name "A-Class Petrol" --result-limit 5 --move-delay 60
+uv run car-flip search-bca --search-name "A-Class Petrol" --result-limit 5 --move-delay 60
 ```
 
-Auto Trader results load by infinite scroll, so the command moves through the
-results in scroll batches up to the configurable result limit (default 5), at
-a configurable non-zero move delay (default 60s), and stops early once two
-consecutive movements produce no new listing IDs. Each run saves a
-never-overwritten capture under `data/captures/autotrader/<capture_id>/` with
-the same layout: original page data, valid parsed records, and a skipped-car
-log. Cars are deduplicated by Auto Trader listing ID, keeping the latest
-version. A capture that stops early is still saved and usable.
+### Capture Auto Trader search results
 
-## Opportunity dashboard
+Runs scoped infinite scroll capture in headed or headless mode:
 
-After both captures are saved, start the local dashboard:
+```bash
+uv run car-flip search-autotrader \
+  --search-name "Audi A3 2018 Petrol" \
+  --make Audi \
+  --model A3 \
+  --year 2018 \
+  --mileage 60000 \
+  --fuel-type Petrol \
+  --transmission Automatic \
+  --trim TFSI \
+  --headless
+```
+
+### Evaluate single vehicle against market evidence
+
+```bash
+uv run car-flip compare-vehicle \
+  --make Audi \
+  --model A3 \
+  --year 2018 \
+  --mileage 60000 \
+  --cap-clean-price 12500 \
+  --autotrader-capture-id "<capture_id>" \
+  --pretty
+```
+
+### Local opportunity dashboard
+
+Start the local Flask dashboard to review valuation signals:
 
 ```bash
 uv run dev
 ```
 
-`uv run dashboard` is an alias. The app binds to `127.0.0.1:5000`, opens a
-browser tab, and reads `data/captures/`. Use `--no-browser`, `--port`, or
-`--data-root` when needed:
-
-```bash
-uv run dev --no-browser --port 5050 --data-root /path/to/captures
-```
-
-The dashboard defaults to the newest usable BCA and Auto Trader Captures. It
-keeps an explicitly selected Capture Pair in the URL, shows all strict
-Candidate Vehicles, and opens source pages in separate tabs for inspection.
-Use Manage Captures to select and delete old saved Captures, including several
-at once. Watchlisting remains on BCA.
+The web server binds to `http://127.0.0.1:5000` and opens the default browser.
 
 ## Development
 
